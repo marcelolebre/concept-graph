@@ -408,6 +408,11 @@ export class ConceptGraph {
       else if (e.key === '2') this.setMode('provenance');
       else if (e.key === '3') this.setMode('confidence');
       else if (e.key === 'f' || e.key === 'F') this._fitCamera();
+      else if (e.key === 'Escape') {
+        this._state.focus = null;
+        this._updatePanel(null);
+        this._dom.hudFocus.textContent = '—';
+      }
     };
     document.addEventListener('keydown', this._onKeyDown);
   }

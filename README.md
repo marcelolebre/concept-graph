@@ -151,6 +151,7 @@ The server can drive the UI by assigning `@focused_id` or a mode — the hook's 
 | scroll / pinch            | zooms around the cursor                                         |
 | `1` / `2` / `3`           | switches to default / provenance / confidence mode              |
 | `F`                       | fits the graph to the viewport                                  |
+| `Esc`                     | deselects the focused node                                      |
 | click a relation in panel | navigates to that concept (wiki-style)                          |
 
 ---
