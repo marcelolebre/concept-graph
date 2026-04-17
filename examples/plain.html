@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>concept-graph · example</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #050505; color: #e6e6e6;
+      font-family: ui-sans-serif, system-ui, sans-serif; }
+    .wrap { max-width: 1200px; margin: 40px auto; padding: 0 20px; }
+    h1 { font-size: 18px; font-weight: 500; margin: 0 0 6px; color: #fff; }
+    p.sub { color: #8a8a8a; font-size: 13px; margin: 0 0 20px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>concept-graph</h1>
+    <p class="sub">Drag nodes · scroll to zoom · click a node to open its wiki entry · <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> to switch modes · <kbd>F</kbd> to fit.</p>
+    <div id="graph"></div>
+  </div>
+
+  <script src="../dist/concept-graph.umd.js"></script>
+  <script>
+    const concepts = [
+      { id: "carbon-pricing-elasticity", label: "Carbon pricing elasticity", kind: "claim", run: 0,
+        summary: "Short-run demand response to carbon pricing clusters around −0.3, with regional variance driven by energy mix and substitute availability." },
+      { id: "rebate-mechanism", label: "Revenue rebate mechanism", kind: "claim", run: 0,
+        summary: "Returning carbon revenue as equal per-capita dividends dampens distributional concerns while preserving the price signal." },
+      { id: "border-adjustment", label: "Border carbon adjustment", kind: "claim", run: 1,
+        summary: "Tariffs on embedded emissions prevent leakage but require credible measurement of foreign carbon intensity." },
+      { id: "leakage-hypothesis", label: "Leakage dominates gains", kind: "hypothesis", run: 1,
+        summary: "Proposes that unilateral pricing relocates production faster than domestic emissions fall." },
+      { id: "double-dividend", label: "Double dividend", kind: "hypothesis", run: 0,
+        summary: "Revenue from carbon tax can fund reductions in distortionary taxes, yielding efficiency gains beyond the emissions reduction." },
+      { id: "shadow-price", label: "Social cost of carbon", kind: "fact", run: 0,
+        summary: "Current EPA central estimate: $190/tCO₂ at 2% discount rate." },
+      { id: "iam-calibration", label: "IAM parameter drift", kind: "claim", run: 2,
+        summary: "Integrated assessment models under-weight damage convexity above 2°C." },
+      { id: "tipping-cascade", label: "Tipping cascade risk", kind: "hypothesis", run: 2,
+        summary: "Coupled tipping elements may trigger sequentially, collapsing standard damage functions." },
+      { id: "energy-substitution", label: "Energy substitution bounds", kind: "claim", run: 1,
+        summary: "Upper bound on short-run substitution set by capital stock turnover." },
+      { id: "distributional-impact", label: "Distributional impact", kind: "claim", run: 0,
+        summary: "Regressive in incidence pre-rebate; progressive post-rebate in most jurisdictions." },
+      { id: "verification-regime", label: "MRV regime", kind: "claim", run: 1,
+        summary: "Measurement, reporting, verification standards required for border adjustment credibility." },
+      { id: "wto-compatibility", label: "WTO compatibility", kind: "claim", run: 1,
+        summary: "Border adjustment structured as excise-equivalent likely compliant under GATT Art. III." },
+      { id: "learning-curve", label: "Tech learning curves", kind: "fact", run: 0,
+        summary: "Solar PV module price has followed a ~20% learning rate since 1976." },
+      { id: "abatement-cost", label: "Marginal abatement cost", kind: "claim", run: 0,
+        summary: "MAC curves are steeper than static estimates suggest once network effects are included." },
+    ];
+
+    const relations = [
+      { source: "carbon-pricing-elasticity", target: "rebate-mechanism", type: "refine", confidence: 0.82 },
+      { source: "carbon-pricing-elasticity", target: "distributional-impact", type: "derive", confidence: 0.9 },
+      { source: "carbon-pricing-elasticity", target: "energy-substitution", type: "derive", confidence: 0.74 },
+      { source: "carbon-pricing-elasticity", target: "abatement-cost", type: "derive", confidence: 0.7 },
+      { source: "rebate-mechanism", target: "distributional-impact", type: "refine", confidence: 0.8 },
+      { source: "rebate-mechanism", target: "double-dividend", type: "contradict", confidence: 0.45 },
+      { source: "double-dividend", target: "shadow-price", type: "derive", confidence: 0.5 },
+      { source: "border-adjustment", target: "leakage-hypothesis", type: "refine", confidence: 0.62 },
+      { source: "border-adjustment", target: "verification-regime", type: "derive", confidence: 0.9 },
+      { source: "border-adjustment", target: "wto-compatibility", type: "derive", confidence: 0.72 },
+      { source: "leakage-hypothesis", target: "energy-substitution", type: "contradict", confidence: 0.38 },
+      { source: "iam-calibration", target: "shadow-price", type: "refine", confidence: 0.78 },
+      { source: "iam-calibration", target: "tipping-cascade", type: "derive", confidence: 0.66 },
+      { source: "iam-calibration", target: "abatement-cost", type: "contradict", confidence: 0.42 },
+      { source: "tipping-cascade", target: "shadow-price", type: "refine", confidence: 0.6 },
+      { source: "learning-curve", target: "abatement-cost", type: "derive", confidence: 0.83 },
+      { source: "wto-compatibility", target: "verification-regime", type: "derive", confidence: 0.65 },
+    ];
+
+    const graph = new ConceptGraph(document.getElementById("graph"), {
+      height: 640,
+      initialFocus: "carbon-pricing-elasticity",
+      onFocus: (c) => console.log("focused:", c.id),
+      onModeChange: (m) => console.log("mode:", m),
+    });
+    graph.setData({ concepts, relations });
+  </script>
+</body>
+</html>
