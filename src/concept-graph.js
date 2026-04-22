@@ -384,19 +384,20 @@ export class ConceptGraph {
       .map(e => {
         const outgoing = e.s === n;
         const other = outgoing ? e.t : e.s;
-        // Pill verb = the *original* verb ("created", "named after",
-        // "wrote") so specificity stays visible on node focus. Pill
-        // colour/class = the canonical bucket (related /
-        // indirectly-related / contradicts) which maps to the legend.
-        // Incoming edges get a leading arrow so direction is readable.
+        // Pill reflects the canonical bucket so the right panel tells
+        // the same story as the sidebar and the edge styling:
+        // {related, indirectly-related, contradicts}. The original
+        // verb (e.label) is kept on a `title` tooltip for the curious.
+        // Incoming edges prefix with an arrow so direction stays clear.
         const canonical = e.type || 'related';
-        const rawVerb = String(e.label || canonical).replace(/_/g, ' ');
-        const verb = outgoing ? rawVerb : '← ' + rawVerb;
+        const display = canonical.replace(/-/g, ' ');
+        const verb = outgoing ? display : '← ' + display;
+        const original = String(e.label || canonical).replace(/_/g, ' ');
         const cls = canonical === 'contradicts' ? 'contradict'
                   : canonical === 'indirectly-related' ? 'refine'
                   : 'derive';
         return `<div class="cg-rel">
-          <span class="cg-verb ${cls}">${escapeHtml(verb)}</span>
+          <span class="cg-verb ${cls}" title="${escapeAttr(original)}">${escapeHtml(verb)}</span>
           <span class="cg-target" data-goto="${escapeAttr(other.id)}">${escapeHtml(other.label || other.id)}</span>
           <span class="cg-conf">${Math.round(e.conf * 100)}%</span>
         </div>`;
