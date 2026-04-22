@@ -88,6 +88,12 @@ class ConceptGraph {
       mode: this.opts.initialMode,
       focus: null,
       hovered: null,
+      // Sidebar filter highlights. `filterKind` and `filterEdgeType` are
+      // mutually independent toggles: clicking a Concept-kind row pins
+      // that kind; clicking a Relation row pins that edge type. Both
+      // dim everything else on the canvas. null = no filter.
+      filterKind: null,
+      filterEdgeType: null,
       cam: { x: 0, y: 0, zoom: 1 },
       dragging: null,
       panning: false,
@@ -268,35 +274,66 @@ class ConceptGraph {
 
   _renderSidebar() {
     const s = this._state;
-    const counts = { derive: 0, refine: 0, contradict: 0 };
-    for (const e of s.edges) if (counts[e.type] != null) counts[e.type]++;
 
-    const runs = new Map();
-    for (const n of s.nodes) runs.set(n.run ?? 0, (runs.get(n.run ?? 0) || 0) + 1);
-    const runRows = [...runs.entries()].sort((a,b) => a[0]-b[0]).map(([run, cnt]) => {
-      const color = RUN_COLORS[run % RUN_COLORS.length];
-      return `<div class="cg-side-item"><span class="cg-sq" style="background:${color};border-color:${color};"></span><span>run.${String(run).padStart(4,'0')}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
-    }).join('');
+    // Relation rows: one per *distinct* edge type in the current graph,
+    // not just the three legacy ones. The three legacy types keep their
+    // line-style glyph (solid / thick / dashed); other types get a solid
+    // line. Types are sorted by count descending so busy verbs float up.
+    const relCounts = new Map();
+    for (const e of s.edges) {
+      const t = e.type || 'related';
+      relCounts.set(t, (relCounts.get(t) || 0) + 1);
+    }
+    const relRows = [...relCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([type, cnt]) => {
+        const lnClass = type === 'refine' ? 'thick'
+                      : type === 'contradict' ? 'dashed'
+                      : '';
+        const label = String(type).replace(/_/g, ' ');
+        const active = s.filterEdgeType === type ? ' active' : '';
+        return `<div class="cg-side-item cg-filter${active}" data-filter-edge="${escapeAttr(type)}"><span class="cg-ln ${lnClass}"></span><span>${escapeHtml(label)}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
+      }).join('');
 
     const kinds = new Map();
     for (const n of s.nodes) kinds.set(n.kind || 'claim', (kinds.get(n.kind || 'claim') || 0) + 1);
-    const kindRows = [...kinds.entries()].map(([kind, cnt]) => {
-      const style = kind === 'hypothesis' ? 'border-style:dashed;' :
-                    kind === 'fact'       ? 'background:#bababa;border-color:#bababa;' :
-                                            'background:#1a1a1a;';
-      return `<div class="cg-side-item"><span class="cg-sq" style="${style}"></span><span>${kind}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
-    }).join('');
+    const kindRows = [...kinds.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([kind, cnt]) => {
+        const style = kind === 'hypothesis' ? 'border-style:dashed;' :
+                      kind === 'fact'       ? 'background:var(--cg-text-primary);border-color:var(--cg-text-primary);' :
+                                              'background:var(--cg-surface-raised);';
+        const active = s.filterKind === kind ? ' active' : '';
+        return `<div class="cg-side-item cg-filter${active}" data-filter-kind="${escapeAttr(kind)}"><span class="cg-sq" style="${style}"></span><span>${escapeHtml(kind)}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
+      }).join('');
 
     this._dom.sidebar.innerHTML = `
       <h4>Relation</h4>
-      <div class="cg-side-item"><span class="cg-ln"></span><span>derives-from</span><span class="cg-count">${String(counts.derive).padStart(2,'0')}</span></div>
-      <div class="cg-side-item"><span class="cg-ln thick"></span><span>refines</span><span class="cg-count">${String(counts.refine).padStart(2,'0')}</span></div>
-      <div class="cg-side-item"><span class="cg-ln dashed"></span><span>contradicts</span><span class="cg-count">${String(counts.contradict).padStart(2,'0')}</span></div>
-      <h4>Agent run</h4>
-      ${runRows || '<div class="cg-side-empty">—</div>'}
+      ${relRows || '<div class="cg-side-empty">—</div>'}
       <h4>Concept kind</h4>
       ${kindRows || '<div class="cg-side-empty">—</div>'}
     `;
+
+    // Click handlers: toggle the filter, re-render (for the `.active`
+    // class), then trigger a redraw. Redraw is implicit via the animation
+    // loop, but we call _draw() to keep the highlight change snappy on
+    // slow laptops where the rAF cadence might lag.
+    this._dom.sidebar.querySelectorAll('[data-filter-edge]').forEach(el => {
+      el.addEventListener('click', () => {
+        const t = el.dataset.filterEdge;
+        s.filterEdgeType = s.filterEdgeType === t ? null : t;
+        this._renderSidebar();
+        this._draw();
+      });
+    });
+    this._dom.sidebar.querySelectorAll('[data-filter-kind]').forEach(el => {
+      el.addEventListener('click', () => {
+        const k = el.dataset.filterKind;
+        s.filterKind = s.filterKind === k ? null : k;
+        this._renderSidebar();
+        this._draw();
+      });
+    });
   }
 
   _updatePanel(n) {
@@ -637,12 +674,41 @@ class ConceptGraph {
 
     const hl = s.focus ? this._neighborSet(s.focus) : null;
 
+    // Sidebar filter dimming. Two sources:
+    //   - filterKind pins nodes of that kind and the edges between them
+    //   - filterEdgeType pins edges of that type and their endpoints
+    // Non-matching content drops to alpha 0.12 (still visible as context
+    // but clearly de-emphasised).
+    const DIM = 0.12;
+    const matchEdge = (e) => {
+      if (s.filterEdgeType && (e.type || 'related') !== s.filterEdgeType) return false;
+      if (s.filterKind) {
+        const sk = e.s.kind || 'claim';
+        const tk = e.t.kind || 'claim';
+        if (sk !== s.filterKind && tk !== s.filterKind) return false;
+      }
+      return true;
+    };
+    const matchNode = (n) => {
+      if (s.filterKind && (n.kind || 'claim') !== s.filterKind) return false;
+      if (s.filterEdgeType) {
+        let touched = false;
+        for (const e of s.edges) {
+          if ((e.type || 'related') === s.filterEdgeType && (e.s === n || e.t === n)) { touched = true; break; }
+        }
+        if (!touched) return false;
+      }
+      return true;
+    };
+    const hasFilter = !!(s.filterKind || s.filterEdgeType);
+
     for (const e of s.edges) {
       const [sx, sy] = this._toScreen(e.s.x, e.s.y);
       const [tx, ty] = this._toScreen(e.t.x, e.t.y);
       const style = this._edgeStyle(e, theme);
       let alpha = 1;
       if (hl) alpha = (hl.has(e.s.id) && hl.has(e.t.id)) ? 1 : 0.22;
+      if (hasFilter) alpha = Math.min(alpha, matchEdge(e) ? 1 : DIM);
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.strokeStyle = style.color;
@@ -664,6 +730,7 @@ class ConceptGraph {
       const r = this._nodeRadius(n) * Math.sqrt(s.cam.zoom);
       let alpha = 1;
       if (hl && !hl.has(n.id)) alpha = 0.3;
+      if (hasFilter) alpha = Math.min(alpha, matchNode(n) ? 1 : DIM);
 
       ctx.save();
       ctx.globalAlpha = alpha;
@@ -846,6 +913,29 @@ const CG_CSS = `
   color: var(--cg-text-secondary); font-size: 12px;
 }
 .cg-side-empty { color: var(--cg-text-disabled); font-size: 11px; padding: 4px 6px; }
+
+/* Clickable filter rows: hover reveals the interactive ring, active
+   row shows a subtle raised background + brighter text, and an accent
+   bar on the left rail so the pinned filter reads at a glance. */
+.cg-side-item.cg-filter {
+  cursor: pointer;
+  position: relative;
+  transition: color 150ms cubic-bezier(0.25, 0.1, 0.25, 1),
+              background 150ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+.cg-side-item.cg-filter:hover { color: var(--cg-text-primary); background: var(--cg-surface-raised); }
+.cg-side-item.cg-filter.active {
+  color: var(--cg-text-display);
+  background: var(--cg-surface-raised);
+}
+.cg-side-item.cg-filter.active::before {
+  content: '';
+  position: absolute;
+  left: -10px; top: 4px; bottom: 4px;
+  width: 2px;
+  background: var(--cg-text-display);
+  border-radius: 2px;
+}
 .cg-sq { width: 8px; height: 8px; border-radius: 2px; border: 1px solid var(--cg-border-visible); flex-shrink: 0; }
 .cg-ln { width: 18px; height: 1px; background: var(--cg-border-visible); flex-shrink: 0; }
 .cg-ln.dashed { background: none; border-top: 1px dashed var(--cg-border-visible); height: 0; }
