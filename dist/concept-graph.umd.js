@@ -22,6 +22,28 @@
 
 const RUN_COLORS = ['#5eead4', '#a78bfa', '#fbbf24', '#f472b6', '#60a5fa', '#34d399'];
 
+// Kind taxonomy → visual treatment. Every concrete kind that graphify
+// emits gets an intentional colour; anything unknown falls through to
+// `violet` / default border. Three CSS tag classes (teal / amber /
+// violet) are re-used across seven kinds so the palette stays tight.
+//
+//   teal    — real-world nouns you can point at (person, organization)
+//   amber   — things-that-happened or decisions made (observation, decision, artifact)
+//   violet  — abstract concepts and the root entity node
+//
+// KIND_STROKE maps to cicrus theme tokens on the canvas so the ring
+// colour of each node matches its sidebar pill colour.
+const KIND_TAG_CLASS = {
+  person: 'teal', organization: 'teal',
+  observation: 'amber', decision: 'amber', artifact: 'amber',
+  concept: 'violet', entity: 'violet',
+};
+const KIND_STROKE = {
+  person: 'success', organization: 'success',
+  observation: 'warning', decision: 'warning', artifact: 'warning',
+  concept: 'interactive', entity: 'interactive',
+};
+
 // Parse a hex colour (#rgb or #rrggbb) or rgb[a]() string into [r,g,b,a].
 // Returns null if the colour can't be parsed. Used to blend cicrus tokens
 // in confidence mode so the component tracks dark/light themes.
@@ -319,13 +341,18 @@ class ConceptGraph {
     const relRowsAll = relRows + extraRows;
 
     const kinds = new Map();
-    for (const n of s.nodes) kinds.set(n.kind || 'claim', (kinds.get(n.kind || 'claim') || 0) + 1);
+    for (const n of s.nodes) kinds.set(n.kind || 'concept', (kinds.get(n.kind || 'concept') || 0) + 1);
+    // Swatch colour follows the same taxonomy as the right-panel pill
+    // and the node ring, so one glance connects sidebar row ↔ canvas.
     const kindRows = [...kinds.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .map(([kind, cnt]) => {
-        const style = kind === 'hypothesis' ? 'border-style:dashed;' :
-                      kind === 'fact'       ? 'background:var(--cg-text-primary);border-color:var(--cg-text-primary);' :
-                                              'background:var(--cg-surface-raised);';
+        const strokeToken = KIND_STROKE[kind];
+        const colorVar = strokeToken === 'success'     ? 'var(--cg-success)'
+                       : strokeToken === 'warning'     ? 'var(--cg-warning)'
+                       : strokeToken === 'interactive' ? 'var(--cg-interactive)'
+                       : 'var(--cg-border-visible)';
+        const style = `background:transparent;border-color:${colorVar};`;
         const active = s.filterKind === kind ? ' active' : '';
         return `<div class="cg-side-item cg-filter${active}" data-filter-kind="${escapeAttr(kind)}"><span class="cg-sq" style="${style}"></span><span>${escapeHtml(kind)}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
       }).join('');
@@ -385,17 +412,16 @@ class ConceptGraph {
         </div>`;
       }).join('');
 
-    const kindClass = n.kind === 'claim' ? 'teal' : n.kind === 'hypothesis' ? 'amber' : 'violet';
-    const runLabel = 'run.' + String(n.run ?? 0).padStart(4, '0');
+    const kind = n.kind || 'concept';
+    const kindClass = KIND_TAG_CLASS[kind] || 'violet';
 
     this._dom.panel.innerHTML = `
       <div class="cg-panel-head">
         <div class="cg-panel-crumbs">wiki <span class="cg-panel-sep">›</span> ${escapeHtml(n.id)}</div>
         <h2>${escapeHtml(n.label || n.id)}</h2>
         <div class="cg-panel-tags">
-          <span class="cg-tag ${kindClass}">${escapeHtml(n.kind || 'claim')}</span>
+          <span class="cg-tag ${kindClass}">${escapeHtml(kind)}</span>
           <span class="cg-tag">degree ${n.deg}</span>
-          <span class="cg-tag violet">${escapeHtml(runLabel)}</span>
         </div>
       </div>
       <div class="cg-panel-body">
@@ -406,8 +432,7 @@ class ConceptGraph {
         <div class="cg-sec">Metadata</div>
         <dl class="cg-meta">
           <dt>id</dt><dd>${escapeHtml(n.id)}</dd>
-          <dt>kind</dt><dd>${escapeHtml(n.kind || 'claim')}</dd>
-          <dt>run</dt><dd>${escapeHtml(runLabel)}</dd>
+          <dt>kind</dt><dd>${escapeHtml(kind)}</dd>
           <dt>degree</dt><dd>${n.deg}</dd>
           ${n.created ? `<dt>created</dt><dd>${escapeHtml(String(n.created))}</dd>` : ''}
         </dl>
@@ -471,7 +496,7 @@ class ConceptGraph {
             this._dom.tooltip.style.display = 'block';
             this._dom.tooltip.innerHTML =
               `<div><span class="cg-k">concept</span>${escapeHtml(h.label || h.id)}</div>` +
-              `<div><span class="cg-k">kind</span>${escapeHtml(h.kind || 'claim')} <span class="cg-k" style="margin-left:8px;">run</span>run.${String(h.run ?? 0).padStart(4,'0')}</div>` +
+              `<div><span class="cg-k">kind</span>${escapeHtml(h.kind || 'concept')}</div>` +
               `<div><span class="cg-k">degree</span>${h.deg}</div>`;
           } else {
             this._dom.tooltip.style.display = 'none';
@@ -639,6 +664,9 @@ class ConceptGraph {
       surface: v('--surface', '#111111'),
       surfaceRaised: v('--surface-raised', '#1A1A1A'),
       accent: v('--accent', '#D71921'),
+      success: v('--success', '#4A9E5C'),
+      warning: v('--warning', '#D4A843'),
+      interactive: v('--interactive', '#5B9BF6'),
       fontBody: v('--font-body', 'ui-sans-serif, system-ui, sans-serif'),
     };
   }
@@ -711,14 +739,14 @@ class ConceptGraph {
     const matchEdge = (e) => {
       if (s.filterEdgeType && (e.type || 'related') !== s.filterEdgeType) return false;
       if (s.filterKind) {
-        const sk = e.s.kind || 'claim';
-        const tk = e.t.kind || 'claim';
+        const sk = e.s.kind || 'concept';
+        const tk = e.t.kind || 'concept';
         if (sk !== s.filterKind && tk !== s.filterKind) return false;
       }
       return true;
     };
     const matchNode = (n) => {
-      if (s.filterKind && (n.kind || 'claim') !== s.filterKind) return false;
+      if (s.filterKind && (n.kind || 'concept') !== s.filterKind) return false;
       if (s.filterEdgeType) {
         let touched = false;
         for (const e of s.edges) {
@@ -777,7 +805,17 @@ class ConceptGraph {
       const isFocus = s.focus === n;
       const isHover = s.hovered === n;
       let fill = theme.surface, stroke = theme.borderVisible, strokeW = 1, dash = null;
-      const kind = n.kind || 'claim';
+      // Stroke colour comes from the kind taxonomy so the graph at a
+      // glance tells you what sort of nodes dominate (people vs concepts
+      // vs artifacts). Legacy kinds (hypothesis/fact) kept as a thin
+      // compat layer in case standalone callers still use them.
+      const kind = n.kind || 'concept';
+      const kindStroke = KIND_STROKE[kind];
+      if (kindStroke) stroke = kindStroke === 'success' ? theme.success
+                            : kindStroke === 'warning' ? theme.warning
+                            : kindStroke === 'interactive' ? theme.interactive
+                            : kindStroke === 'accent' ? theme.accent
+                            : theme.borderVisible;
       if (kind === 'hypothesis') { dash = [2, 2]; stroke = theme.textDisabled; }
       if (kind === 'fact')       { fill = theme.textPrimary; stroke = theme.textPrimary; }
       if (s.mode === 'provenance') { stroke = RUN_COLORS[(n.run ?? 0) % RUN_COLORS.length]; strokeW = 1.5; }
