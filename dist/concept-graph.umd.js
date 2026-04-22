@@ -734,9 +734,17 @@ class ConceptGraph {
       const [sx, sy] = this._toScreen(e.s.x, e.s.y);
       const [tx, ty] = this._toScreen(e.t.x, e.t.y);
       const style = this._edgeStyle(e, theme);
+      // An active sidebar filter takes precedence over the focus-neighbor
+      // dimming. Without this, a filter hit on a non-neighbor of the focus
+      // node (e.g. "persons" who aren't direct neighbors of the default-
+      // focused node) got stuck at 0.3 alpha from the focus pass and never
+      // brightened. Filter intent is global; focus is contextual.
       let alpha = 1;
-      if (hl) alpha = (hl.has(e.s.id) && hl.has(e.t.id)) ? 1 : 0.22;
-      if (hasFilter) alpha = Math.min(alpha, matchEdge(e) ? 1 : DIM);
+      if (hasFilter) {
+        alpha = matchEdge(e) ? 1 : DIM;
+      } else if (hl) {
+        alpha = (hl.has(e.s.id) && hl.has(e.t.id)) ? 1 : 0.22;
+      }
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.strokeStyle = style.color;
@@ -757,8 +765,11 @@ class ConceptGraph {
       const [x, y] = this._toScreen(n.x, n.y);
       const r = this._nodeRadius(n) * Math.sqrt(s.cam.zoom);
       let alpha = 1;
-      if (hl && !hl.has(n.id)) alpha = 0.3;
-      if (hasFilter) alpha = Math.min(alpha, matchNode(n) ? 1 : DIM);
+      if (hasFilter) {
+        alpha = matchNode(n) ? 1 : DIM;
+      } else if (hl && !hl.has(n.id)) {
+        alpha = 0.3;
+      }
 
       ctx.save();
       ctx.globalAlpha = alpha;
