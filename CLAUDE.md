@@ -42,20 +42,37 @@ See README for the canonical shape. Summary:
 
 ### Kind taxonomy (visual layer)
 
-Seven concrete kinds get an intentional palette and glyph. Anything
-outside the list falls through to the `violet` / `interactive`
-defaults. Visual mapping lives at the top of `src/concept-graph.js`
-(`KIND_TAG_CLASS`, `KIND_STROKE`):
+Seven concrete kinds map onto three Cicrus colour tokens. Anything
+outside the list falls through to `interactive`. The single source of
+truth is `KIND_TOKEN` at the top of `src/concept-graph.js`
+(re-exported as `KIND_TAG_CLASS` / `KIND_STROKE` for back-compat):
 
-| bucket    | kinds                                  | meaning                             |
-|-----------|----------------------------------------|-------------------------------------|
-| teal      | `person`, `organization`               | real-world nouns you can point at   |
-| amber     | `observation`, `decision`, `artifact`  | things that happened / were decided |
-| violet    | `concept`, `entity`                    | abstractions + the root entity node |
+| token         | kinds                                  | meaning                             |
+|---------------|----------------------------------------|-------------------------------------|
+| `success`     | `person`, `organization`               | real-world nouns you can point at   |
+| `warning`     | `observation`, `decision`, `artifact`  | things that happened / were decided |
+| `interactive` | `concept`, `entity`                    | abstractions + the root entity node |
 
-Each concept also gets a deterministic per-id glyph variant (FNV-1a hash
-over `id` → rotation, facet count, inner ornament phase) so the same
-concept looks the same across reloads and machines.
+### Glyph language (instrument-dial)
+
+All glyphs share the same silhouette — a thin stroked ring. Kind is
+encoded by a small set of filled dots riding on the ring, not by
+varying the outer shape. One dial family, different needle positions.
+
+| kind           | mark                                          |
+|----------------|-----------------------------------------------|
+| `concept`      | empty ring                                    |
+| `entity`       | double-stroke ring + centre dot *(the break)* |
+| `person`       | 1 dot @ 12 o'clock                            |
+| `artifact`     | 1 dot @ 6 o'clock                             |
+| `decision`     | 2 dots @ 9 + 3                                |
+| `organization` | 3 dots @ 12 / 4 / 8                           |
+| `observation`  | dashed ring (transient / witness)             |
+
+`entity` is the single "break the pattern" moment per Cicrus craft
+rules — everything else shares the same ring weight. No hash-driven
+rotation or facet jitter: same input = same glyph across reloads,
+percussive/mechanical rather than decorative-random.
 
 ### Relation taxonomy (edge layer)
 
@@ -74,9 +91,12 @@ string is kept verbatim and shown with an `←` prefix on incoming edges
 ### Three modes
 
 - **default** — relation bucket encoded in line style + color; confidence
-  modulates width subtly. A small colored pip per node shows its agent run.
-- **provenance** — edges recolor by the source node's agent run. Useful
-  for seeing which run contributed which subgraph.
+  modulates width subtly. Node glyphs are silent on provenance — the
+  dial is the whole visual.
+- **provenance** — edges recolor by the source node's agent run; the
+  node ring itself switches to the run colour so the whole subgraph
+  reads as one voice. Default mode is silent on run so the two
+  languages don't compete.
 - **confidence** — edges go grayscale; width and opacity scale with
   confidence. Weak links fade; high-confidence ones thicken.
 
