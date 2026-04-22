@@ -144,6 +144,12 @@ class ConceptGraph {
         const source = typeof r.source === 'string' ? r.source : r[0];
         const target = typeof r.target === 'string' ? r.target : r[1];
         const type   = r.type || r[2] || 'derive';
+        // `label` is the original/specific verb (e.g. "named after",
+        // "wrote") surfaced on the node detail panel. `type` is the
+        // canonical bucket used for filtering, colouring and the sidebar
+        // legend. Standalone callers that only pass `type` get the type
+        // as the label.
+        const label = r.label || r[4] || type;
         // Confidence must be numeric — the physics step does
         // `0.5 + conf * 0.8` every tick. A non-number (e.g. "EXTRACTED")
         // propagates NaN into every node position within a few ticks and
@@ -154,7 +160,7 @@ class ConceptGraph {
         const s_ = s.idToNode.get(source);
         const t_ = s.idToNode.get(target);
         if (!s_ || !t_) return null;
-        return { s: s_, t: t_, type, conf };
+        return { s: s_, t: t_, type, label, conf };
       })
       .filter(Boolean);
 
@@ -275,25 +281,42 @@ class ConceptGraph {
   _renderSidebar() {
     const s = this._state;
 
-    // Relation rows: one per *distinct* edge type in the current graph,
-    // not just the three legacy ones. The three legacy types keep their
-    // line-style glyph (solid / thick / dashed); other types get a solid
-    // line. Types are sorted by count descending so busy verbs float up.
+    // Relation rows: three canonical buckets with stable order, regardless
+    // of which buckets happen to have edges in the current graph. This is
+    // a deliberate taxonomy choice (see GraphifyGraph.canonical_type) —
+    // collapsing ~30 LLM-extracted verbs into {related, indirectly-related,
+    // contradicts} so the legend is useful at a glance. Specific verbs
+    // survive on the node detail pills via `e.label`.
     const relCounts = new Map();
     for (const e of s.edges) {
       const t = e.type || 'related';
       relCounts.set(t, (relCounts.get(t) || 0) + 1);
     }
-    const relRows = [...relCounts.entries()]
+    const canonicalOrder = [
+      ['related',            ''      ],
+      ['indirectly-related', 'thick' ],
+      ['contradicts',        'dashed'],
+    ];
+    const shownRels = new Set();
+    const relRows = canonicalOrder.map(([type, lnClass]) => {
+      const cnt = relCounts.get(type) || 0;
+      if (cnt === 0) return '';
+      shownRels.add(type);
+      const label = String(type).replace(/-/g, ' ');
+      const active = s.filterEdgeType === type ? ' active' : '';
+      return `<div class="cg-side-item cg-filter${active}" data-filter-edge="${escapeAttr(type)}"><span class="cg-ln ${lnClass}"></span><span>${escapeHtml(label)}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
+    }).join('');
+    // Defensive tail: any off-taxonomy types (shouldn't happen with
+    // graphify normalisation, but the component is used standalone too).
+    const extraRows = [...relCounts.entries()]
+      .filter(([t]) => !shownRels.has(t))
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .map(([type, cnt]) => {
-        const lnClass = type === 'refine' ? 'thick'
-                      : type === 'contradict' ? 'dashed'
-                      : '';
-        const label = String(type).replace(/_/g, ' ');
+        const label = String(type).replace(/[_-]/g, ' ');
         const active = s.filterEdgeType === type ? ' active' : '';
-        return `<div class="cg-side-item cg-filter${active}" data-filter-edge="${escapeAttr(type)}"><span class="cg-ln ${lnClass}"></span><span>${escapeHtml(label)}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
+        return `<div class="cg-side-item cg-filter${active}" data-filter-edge="${escapeAttr(type)}"><span class="cg-ln"></span><span>${escapeHtml(label)}</span><span class="cg-count">${String(cnt).padStart(2,'0')}</span></div>`;
       }).join('');
+    const relRowsAll = relRows + extraRows;
 
     const kinds = new Map();
     for (const n of s.nodes) kinds.set(n.kind || 'claim', (kinds.get(n.kind || 'claim') || 0) + 1);
@@ -309,7 +332,7 @@ class ConceptGraph {
 
     this._dom.sidebar.innerHTML = `
       <h4>Relation</h4>
-      ${relRows || '<div class="cg-side-empty">—</div>'}
+      ${relRowsAll || '<div class="cg-side-empty">—</div>'}
       <h4>Concept kind</h4>
       ${kindRows || '<div class="cg-side-empty">—</div>'}
     `;
@@ -344,18 +367,17 @@ class ConceptGraph {
       .map(e => {
         const outgoing = e.s === n;
         const other = outgoing ? e.t : e.s;
-        // Three legacy edge types (derive/refine/contradict) get a passive
-        // verb when the focus is the target. Anything else is a real domain
-        // relation (created, wrote, named_after, …) — render the label
-        // itself, prefixed with an arrow for incoming edges so direction
-        // stays legible.
-        const type = e.type || 'related';
-        let verb;
-        if (type === 'derive') verb = outgoing ? 'derives' : 'derived-by';
-        else if (type === 'refine') verb = outgoing ? 'refines' : 'refined-by';
-        else if (type === 'contradict') verb = outgoing ? 'contradicts' : 'contradicted-by';
-        else verb = (outgoing ? '' : '← ') + String(type).replace(/_/g, ' ');
-        const cls = type === 'contradict' ? 'contradict' : type === 'refine' ? 'refine' : 'derive';
+        // Pill verb = the *original* verb ("created", "named after",
+        // "wrote") so specificity stays visible on node focus. Pill
+        // colour/class = the canonical bucket (related /
+        // indirectly-related / contradicts) which maps to the legend.
+        // Incoming edges get a leading arrow so direction is readable.
+        const canonical = e.type || 'related';
+        const rawVerb = String(e.label || canonical).replace(/_/g, ' ');
+        const verb = outgoing ? rawVerb : '← ' + rawVerb;
+        const cls = canonical === 'contradicts' ? 'contradict'
+                  : canonical === 'indirectly-related' ? 'refine'
+                  : 'derive';
         return `<div class="cg-rel">
           <span class="cg-verb ${cls}">${escapeHtml(verb)}</span>
           <span class="cg-target" data-goto="${escapeAttr(other.id)}">${escapeHtml(other.label || other.id)}</span>
@@ -622,25 +644,31 @@ class ConceptGraph {
   }
 
   _edgeStyle(e, theme) {
+    // Canonical buckets drive edge styling. Keep the three legacy aliases
+    // (`contradict`, `refine`, `derive`) as synonyms so existing callers
+    // that pre-date the canonical taxonomy still render correctly.
     const mode = this._state.mode;
+    const t = e.type;
+    const isContradict = t === 'contradicts' || t === 'contradict';
+    const isIndirect   = t === 'indirectly-related' || t === 'refine';
     let color = theme.border, width = 1, dash = null;
     if (mode === 'default') {
-      if (e.type === 'contradict') { dash = [3, 3]; color = theme.accent; }
-      else if (e.type === 'refine') { width = 1.5; color = theme.borderVisible; }
+      if (isContradict) { dash = [3, 3]; color = theme.accent; }
+      else if (isIndirect) { width = 1.5; color = theme.borderVisible; }
       width *= (0.7 + e.conf * 1.2);
     } else if (mode === 'confidence') {
       // Confidence mode: low conf → faint edge, high conf → visible text color.
       // Blend between borderVisible and textPrimary in grayscale space so
       // dark and light modes both produce legible ramps.
-      const t = Math.max(0, Math.min(1, e.conf));
-      const a = 0.25 + t * 0.65;
-      color = mixRgba(theme.borderVisible, theme.textPrimary, t, a);
-      width = 0.7 + t * 2.5;
-      if (e.type === 'contradict') dash = [3, 3];
+      const tt = Math.max(0, Math.min(1, e.conf));
+      const a = 0.25 + tt * 0.65;
+      color = mixRgba(theme.borderVisible, theme.textPrimary, tt, a);
+      width = 0.7 + tt * 2.5;
+      if (isContradict) dash = [3, 3];
     } else if (mode === 'provenance') {
       color = RUN_COLORS[(e.s.run ?? 0) % RUN_COLORS.length];
       width = 0.7 + e.conf * 1.6;
-      if (e.type === 'contradict') dash = [3, 3];
+      if (isContradict) dash = [3, 3];
     }
     return { color, width, dash };
   }
