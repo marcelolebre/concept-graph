@@ -62,14 +62,21 @@ const relations = [
   {
     source:     "carbon-pricing-elasticity",       // concept id
     target:     "rebate-mechanism",                 // concept id
-    type:       "refine",                           // 'derive' | 'refine' | 'contradict'
-    confidence: 0.82                                // 0..1
+    type:       "refine",                           // 'derive' | 'refine' | 'contradict' | any string
+    confidence: 0.82                                // 0..1 (non-numeric values are coerced)
   },
   // ...
 ];
 ```
 
 Array-tuple form is also accepted: `["source-id", "target-id", "refine", 0.82]`.
+
+`type` accepts any string. The three legacy types (`derive` / `refine` /
+`contradict`) are special-cased with passive forms for incoming edges
+(`derived-by`, `refined-by`, `contradicted-by`) and map to the three
+coloured verb pills. Any other string is shown verbatim, with an `←`
+prefix on incoming edges to keep direction readable (e.g. `created`,
+`named_after`, `wrote`). Underscores are rendered as spaces.
 
 ---
 
@@ -153,6 +160,42 @@ The server can drive the UI by assigning `@focused_id` or a mode — the hook's 
 | `F`                       | fits the graph to the viewport                                  |
 | `Esc`                     | deselects the focused node                                      |
 | click a relation in panel | navigates to that concept (wiki-style)                          |
+
+---
+
+## Theming
+
+All colours, fonts and radii are driven by CSS custom properties. Declare
+them on any ancestor (`:root`, `body`, or the component's container) and the
+graph — panel, sidebar, **and canvas** — will track them. Toggling a
+`body.light` / `body.dark` class is enough to re-theme the whole component
+without re-mounting it.
+
+| token                 | falls back to                                  | used for                                  |
+|-----------------------|------------------------------------------------|-------------------------------------------|
+| `--black`             | `#000000`                                      | canvas stage background                   |
+| `--surface`           | `#111111`                                      | topbar, sidebar, right panel, node fill   |
+| `--surface-raised`    | `#1A1A1A`                                      | active chip background, tooltip           |
+| `--border`            | `#2E2E2E`                                      | dividers, canvas grid, idle chip border   |
+| `--border-visible`    | `#555555`                                      | sidebar swatches, hover chip border       |
+| `--text-disabled`     | `#8F8F8F`                                      | crumbs, HUD, sidebar section headings     |
+| `--text-secondary`    | `#B8B8B8`                                      | body text, node labels                    |
+| `--text-primary`      | `#E8E8E8`                                      | target labels, `fact` nodes               |
+| `--text-display`      | `#FFFFFF`                                      | panel `<h2>`, focused node stroke         |
+| `--accent`            | `#D71921`                                      | `contradict` edges + verb pill            |
+| `--success`           | `#4A9E5C`                                      | `refine` verb, live dot                   |
+| `--warning`           | `#D4A843`                                      | `amber` tag                               |
+| `--interactive`       | `#5B9BF6`                                      | `derive` verb, `violet` tag               |
+| `--font-body`         | `Space Grotesk, system-ui, sans-serif`         | body text, node labels                    |
+| `--font-mono`         | `Space Mono, ui-monospace, Menlo, monospace`   | chips, verbs, section labels, counts      |
+
+The canvas reads these tokens from `getComputedStyle(el)` every frame, so
+toggling dark/light at runtime repaints immediately with no redraw glue.
+Standalone usage without the tokens falls back to a dark-instrument palette
+(the original look).
+
+The component pairs well with [Cicrus](https://github.com/marcelolebre/cicrus)
+which declares every token above on `:root` / `body.light`.
 
 ---
 

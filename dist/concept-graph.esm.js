@@ -12,6 +12,46 @@
 
 const RUN_COLORS = ['#5eead4', '#a78bfa', '#fbbf24', '#f472b6', '#60a5fa', '#34d399'];
 
+// Parse a hex colour (#rgb or #rrggbb) or rgb[a]() string into [r,g,b,a].
+// Returns null if the colour can't be parsed. Used to blend cicrus tokens
+// in confidence mode so the component tracks dark/light themes.
+function parseColor(str) {
+  if (!str) return null;
+  const s = str.trim();
+  if (s[0] === '#') {
+    const hex = s.slice(1);
+    if (hex.length === 3) {
+      return [
+        parseInt(hex[0] + hex[0], 16),
+        parseInt(hex[1] + hex[1], 16),
+        parseInt(hex[2] + hex[2], 16),
+        1,
+      ];
+    }
+    if (hex.length === 6) {
+      return [
+        parseInt(hex.slice(0, 2), 16),
+        parseInt(hex.slice(2, 4), 16),
+        parseInt(hex.slice(4, 6), 16),
+        1,
+      ];
+    }
+  }
+  const m = s.match(/^rgba?\(([^)]+)\)$/i);
+  if (m) {
+    const parts = m[1].split(',').map(p => parseFloat(p));
+    if (parts.length >= 3) return [parts[0], parts[1], parts[2], parts[3] != null ? parts[3] : 1];
+  }
+  return null;
+}
+
+function mixRgba(a, b, t, alpha) {
+  const ca = parseColor(a) || [128, 128, 128, 1];
+  const cb = parseColor(b) || [232, 232, 232, 1];
+  const lerp = (x, y) => Math.round(x + (y - x) * t);
+  return `rgba(${lerp(ca[0], cb[0])},${lerp(ca[1], cb[1])},${lerp(ca[2], cb[2])},${alpha})`;
+}
+
 const DEFAULT_OPTIONS = {
   height: 620,
   initialMode: 'default',      // 'default' | 'provenance' | 'confidence'
@@ -88,7 +128,13 @@ export class ConceptGraph {
         const source = typeof r.source === 'string' ? r.source : r[0];
         const target = typeof r.target === 'string' ? r.target : r[1];
         const type   = r.type || r[2] || 'derive';
-        const conf   = r.confidence != null ? r.confidence : (r[3] != null ? r[3] : 0.5);
+        // Confidence must be numeric — the physics step does
+        // `0.5 + conf * 0.8` every tick. A non-number (e.g. "EXTRACTED")
+        // propagates NaN into every node position within a few ticks and
+        // the entire canvas blanks. Coerce to a float with a sane default.
+        const rawConf = r.confidence != null ? r.confidence : (r[3] != null ? r[3] : 0.5);
+        let conf = typeof rawConf === 'number' ? rawConf : parseFloat(rawConf);
+        if (!Number.isFinite(conf)) conf = 0.7;
         const s_ = s.idToNode.get(source);
         const t_ = s.idToNode.get(target);
         if (!s_ || !t_) return null;
@@ -251,10 +297,18 @@ export class ConceptGraph {
       .map(e => {
         const outgoing = e.s === n;
         const other = outgoing ? e.t : e.s;
-        const verb = e.type === 'derive' ? (outgoing ? 'derives' : 'derived-by')
-                   : e.type === 'refine' ? (outgoing ? 'refines' : 'refined-by')
-                                         : (outgoing ? 'contradicts' : 'contradicted-by');
-        const cls = e.type === 'contradict' ? 'contradict' : e.type === 'refine' ? 'refine' : 'derive';
+        // Three legacy edge types (derive/refine/contradict) get a passive
+        // verb when the focus is the target. Anything else is a real domain
+        // relation (created, wrote, named_after, …) — render the label
+        // itself, prefixed with an arrow for incoming edges so direction
+        // stays legible.
+        const type = e.type || 'related';
+        let verb;
+        if (type === 'derive') verb = outgoing ? 'derives' : 'derived-by';
+        else if (type === 'refine') verb = outgoing ? 'refines' : 'refined-by';
+        else if (type === 'contradict') verb = outgoing ? 'contradicts' : 'contradicted-by';
+        else verb = (outgoing ? '' : '← ') + String(type).replace(/_/g, ' ');
+        const cls = type === 'contradict' ? 'contradict' : type === 'refine' ? 'refine' : 'derive';
         return `<div class="cg-rel">
           <span class="cg-verb ${cls}">${escapeHtml(verb)}</span>
           <span class="cg-target" data-goto="${escapeAttr(other.id)}">${escapeHtml(other.label || other.id)}</span>
@@ -496,17 +550,45 @@ export class ConceptGraph {
 
   _nodeRadius(n) { return 5 + Math.min(n.deg, 6) * 1.2; }
 
-  _edgeStyle(e) {
+  // Resolve a CSS custom property declared on the root element (so the
+  // component tracks cicrus tokens in whichever document it's mounted in).
+  // Falls back to the supplied default for standalone usage without the
+  // cicrus stylesheet. Cached per _draw() to avoid per-edge CSSOM hits.
+  _readTheme() {
+    const cs = getComputedStyle(this.el);
+    const v = (name, fallback) => {
+      const raw = cs.getPropertyValue(name).trim();
+      return raw || fallback;
+    };
+    return {
+      border: v('--border', '#2E2E2E'),
+      borderVisible: v('--border-visible', '#555555'),
+      textDisabled: v('--text-disabled', '#8F8F8F'),
+      textSecondary: v('--text-secondary', '#B8B8B8'),
+      textPrimary: v('--text-primary', '#E8E8E8'),
+      textDisplay: v('--text-display', '#FFFFFF'),
+      surface: v('--surface', '#111111'),
+      surfaceRaised: v('--surface-raised', '#1A1A1A'),
+      accent: v('--accent', '#D71921'),
+      fontBody: v('--font-body', 'ui-sans-serif, system-ui, sans-serif'),
+    };
+  }
+
+  _edgeStyle(e, theme) {
     const mode = this._state.mode;
-    let color = '#2f2f2f', width = 1, dash = null;
+    let color = theme.border, width = 1, dash = null;
     if (mode === 'default') {
-      if (e.type === 'contradict') { dash = [3, 3]; color = '#3a2a2a'; }
-      if (e.type === 'refine')     { width = 1.5; color = '#3a3a3a'; }
+      if (e.type === 'contradict') { dash = [3, 3]; color = theme.accent; }
+      else if (e.type === 'refine') { width = 1.5; color = theme.borderVisible; }
       width *= (0.7 + e.conf * 1.2);
     } else if (mode === 'confidence') {
-      const g = Math.round(40 + e.conf * 160);
-      color = `rgba(${g},${g},${g},${0.35 + e.conf*0.55})`;
-      width = 0.7 + e.conf * 2.5;
+      // Confidence mode: low conf → faint edge, high conf → visible text color.
+      // Blend between borderVisible and textPrimary in grayscale space so
+      // dark and light modes both produce legible ramps.
+      const t = Math.max(0, Math.min(1, e.conf));
+      const a = 0.25 + t * 0.65;
+      color = mixRgba(theme.borderVisible, theme.textPrimary, t, a);
+      width = 0.7 + t * 2.5;
       if (e.type === 'contradict') dash = [3, 3];
     } else if (mode === 'provenance') {
       color = RUN_COLORS[(e.s.run ?? 0) % RUN_COLORS.length];
@@ -525,13 +607,13 @@ export class ConceptGraph {
     return set;
   }
 
-  _drawGrid() {
+  _drawGrid(theme) {
     const ctx = this._ctx, s = this._state;
     const step = 40 * s.cam.zoom;
     const [wx, wy] = this._toWorld(0, 0);
     const offX = ((-wx * s.cam.zoom) % step + step) % step;
     const offY = ((-wy * s.cam.zoom) % step + step) % step;
-    ctx.fillStyle = '#141414';
+    ctx.fillStyle = theme.border;
     for (let y = offY; y < s.H; y += step) {
       for (let x = offX; x < s.W; x += step) ctx.fillRect(x, y, 1, 1);
     }
@@ -539,15 +621,16 @@ export class ConceptGraph {
 
   _draw() {
     const ctx = this._ctx, s = this._state;
+    const theme = this._readTheme();
     ctx.clearRect(0, 0, s.W, s.H);
-    this._drawGrid();
+    this._drawGrid(theme);
 
     const hl = s.focus ? this._neighborSet(s.focus) : null;
 
     for (const e of s.edges) {
       const [sx, sy] = this._toScreen(e.s.x, e.s.y);
       const [tx, ty] = this._toScreen(e.t.x, e.t.y);
-      const style = this._edgeStyle(e);
+      const style = this._edgeStyle(e, theme);
       let alpha = 1;
       if (hl) alpha = (hl.has(e.s.id) && hl.has(e.t.id)) ? 1 : 0.22;
       ctx.save();
@@ -577,12 +660,12 @@ export class ConceptGraph {
 
       const isFocus = s.focus === n;
       const isHover = s.hovered === n;
-      let fill = '#0f0f0f', stroke = '#4a4a4a', strokeW = 1, dash = null;
+      let fill = theme.surface, stroke = theme.borderVisible, strokeW = 1, dash = null;
       const kind = n.kind || 'claim';
-      if (kind === 'hypothesis') { dash = [2, 2]; stroke = '#6a6a6a'; }
-      if (kind === 'fact')       { fill = '#e6e6e6'; stroke = '#e6e6e6'; }
+      if (kind === 'hypothesis') { dash = [2, 2]; stroke = theme.textDisabled; }
+      if (kind === 'fact')       { fill = theme.textPrimary; stroke = theme.textPrimary; }
       if (s.mode === 'provenance') { stroke = RUN_COLORS[(n.run ?? 0) % RUN_COLORS.length]; strokeW = 1.5; }
-      if (isFocus || isHover)      { stroke = '#ffffff'; strokeW = 1.8; }
+      if (isFocus || isHover)      { stroke = theme.textDisplay; strokeW = 1.8; }
 
       ctx.fillStyle = fill;
       ctx.strokeStyle = stroke;
@@ -605,8 +688,8 @@ export class ConceptGraph {
       const showLabel = isFocus || isHover || n.deg >= 4;
       if (showLabel && n.label) {
         ctx.globalAlpha = alpha;
-        ctx.font = (isFocus ? '600 ' : '') + '11px ui-sans-serif, system-ui, sans-serif';
-        ctx.fillStyle = isFocus ? '#fff' : '#bababa';
+        ctx.font = (isFocus ? '500 ' : '300 ') + '11px ' + theme.fontBody;
+        ctx.fillStyle = isFocus ? theme.textDisplay : theme.textSecondary;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(n.label, x, y + r + 4);
@@ -647,129 +730,274 @@ function escapeAttr(s) { return escapeHtml(s); }
 
 // ---------- styles ----------
 
+// ---------------------------------------------------------------------------
+// Styling
+//
+// The component is styled against the Cicrus design-system tokens
+// (see https://github.com/marcelolebre/cicrus / icarus/skills/cicrus-design).
+// Every colour, font and radius maps to a CSS custom property declared on
+// `<body>` so toggling `body.light` on the host document flips the whole
+// graph — panel, sidebar and canvas — between dark and light mode.
+//
+// When consumed outside cicrus, the fallbacks after each `var(…, fallback)`
+// kick in and reproduce the original dark-instrument palette so the
+// component still works standalone.
+// ---------------------------------------------------------------------------
+
 const CG_CSS = `
 .cg-root {
-  font-family: ui-sans-serif, -apple-system, "Inter", system-ui, sans-serif;
-  color: #e6e6e6;
-  background: #0a0a0a;
-  border: 1px solid #1e1e1e;
-  border-radius: 10px;
+  /* Cicrus tokens with standalone fallbacks. */
+  --cg-black:            var(--black, #000000);
+  --cg-surface:          var(--surface, #111111);
+  --cg-surface-raised:   var(--surface-raised, #1A1A1A);
+  --cg-border:           var(--border, #2E2E2E);
+  --cg-border-visible:   var(--border-visible, #555555);
+  --cg-text-disabled:    var(--text-disabled, #8F8F8F);
+  --cg-text-secondary:   var(--text-secondary, #B8B8B8);
+  --cg-text-primary:     var(--text-primary, #E8E8E8);
+  --cg-text-display:     var(--text-display, #FFFFFF);
+  --cg-accent:           var(--accent, #D71921);
+  --cg-success:          var(--success, #4A9E5C);
+  --cg-warning:          var(--warning, #D4A843);
+  --cg-interactive:      var(--interactive, #5B9BF6);
+  --cg-font-body:        var(--font-body, 'Space Grotesk', system-ui, sans-serif);
+  --cg-font-mono:        var(--font-mono, 'Space Mono', ui-monospace, Menlo, monospace);
+
+  font-family: var(--cg-font-body);
+  color: var(--cg-text-primary);
+  background: var(--cg-black);
+  border: 1px solid var(--cg-border);
+  border-radius: 8px;
   overflow: hidden;
   display: grid;
   grid-template-rows: 40px 1fr;
   height: var(--cg-height, 620px);
   box-sizing: border-box;
+  transition: background 250ms cubic-bezier(0.25, 0.1, 0.25, 1),
+              border-color 250ms cubic-bezier(0.25, 0.1, 0.25, 1),
+              color 250ms cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 .cg-root * { box-sizing: border-box; }
+
+/* ---------- top bar ---------- */
 .cg-top {
   display: flex; align-items: center; gap: 14px; padding: 0 14px;
-  border-bottom: 1px solid #1e1e1e; background: #0c0c0c;
-  font-size: 12px; color: #9a9a9a;
+  border-bottom: 1px solid var(--cg-border); background: var(--cg-surface);
+  font-size: 12px; color: var(--cg-text-disabled);
 }
-.cg-brand { display: flex; align-items: center; gap: 8px; color: #e6e6e6; font-weight: 500; }
-.cg-dot { width: 6px; height: 6px; border-radius: 50%; background: #5eead4; box-shadow: 0 0 0 3px rgba(94,234,212,0.1); }
-.cg-sep { color: #3a3a3a; }
-.cg-path { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.cg-brand { display: flex; align-items: center; gap: 8px; color: var(--cg-text-primary); font-weight: 400; }
+.cg-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cg-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cg-success) 15%, transparent);
+}
+.cg-sep { color: var(--cg-border-visible); }
+.cg-path { font-family: var(--cg-font-mono); font-size: 11px; letter-spacing: 0.04em; }
 .cg-spacer { flex: 1; }
 .cg-chip {
   display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid #1e1e1e; border-radius: 6px; padding: 4px 8px;
-  font-size: 11px; color: #bababa; background: #111; cursor: pointer;
-  user-select: none; transition: border-color 120ms, color 120ms;
+  border: 1px solid var(--cg-border); border-radius: 999px; padding: 4px 10px;
+  font-family: var(--cg-font-mono);
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--cg-text-secondary); background: transparent; cursor: pointer;
+  user-select: none; transition: border-color 150ms cubic-bezier(0.25, 0.1, 0.25, 1),
+                                  color 150ms cubic-bezier(0.25, 0.1, 0.25, 1);
 }
-.cg-chip:hover { border-color: #2e2e2e; color: #fff; }
-.cg-chip.on { border-color: #3d3d3d; color: #fff; background: #161616; }
+.cg-chip:hover { border-color: var(--cg-border-visible); color: var(--cg-text-primary); }
+.cg-chip.on {
+  border-color: var(--cg-text-secondary);
+  color: var(--cg-text-display);
+  background: var(--cg-surface-raised);
+}
 .cg-chip kbd {
-  font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: #6a6a6a;
-  background: #0a0a0a; border: 1px solid #242424; border-radius: 3px; padding: 0 4px; margin-left: 2px;
+  font-family: var(--cg-font-mono); font-size: 10px; color: var(--cg-text-disabled);
+  background: var(--cg-black); border: 1px solid var(--cg-border); border-radius: 3px;
+  padding: 0 4px; margin-left: 2px;
 }
+
+/* ---------- layout ---------- */
 .cg-body { display: grid; grid-template-columns: 200px 1fr 320px; min-height: 0; }
+
+/* ---------- left sidebar ---------- */
 .cg-side {
-  border-right: 1px solid #1e1e1e; padding: 12px 10px; font-size: 12px; overflow: auto; background: #0a0a0a;
+  border-right: 1px solid var(--cg-border);
+  padding: 12px 10px;
+  overflow: auto;
+  background: var(--cg-surface);
 }
 .cg-side h4 {
-  font-size: 10px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase;
-  color: #6a6a6a; margin: 10px 4px 6px;
+  font-family: var(--cg-font-mono);
+  font-size: 10px; font-weight: 400; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--cg-text-disabled); margin: 12px 4px 8px;
 }
 .cg-side h4:first-child { margin-top: 2px; }
 .cg-side-item {
-  display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 5px;
-  color: #bababa; font-size: 12px;
+  display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px;
+  color: var(--cg-text-secondary); font-size: 12px;
 }
-.cg-side-empty { color: #5a5a5a; font-size: 11px; padding: 4px 6px; }
-.cg-sq { width: 8px; height: 8px; border-radius: 2px; border: 1px solid #3a3a3a; flex-shrink: 0; }
-.cg-ln { width: 18px; height: 1px; background: #3a3a3a; flex-shrink: 0; }
-.cg-ln.dashed { background: none; border-top: 1px dashed #3a3a3a; height: 0; }
-.cg-ln.thick { height: 2px; background: #bababa; }
-.cg-count { margin-left: auto; color: #5a5a5a; font-variant-numeric: tabular-nums; font-size: 11px; }
+.cg-side-empty { color: var(--cg-text-disabled); font-size: 11px; padding: 4px 6px; }
+.cg-sq { width: 8px; height: 8px; border-radius: 2px; border: 1px solid var(--cg-border-visible); flex-shrink: 0; }
+.cg-ln { width: 18px; height: 1px; background: var(--cg-border-visible); flex-shrink: 0; }
+.cg-ln.dashed { background: none; border-top: 1px dashed var(--cg-border-visible); height: 0; }
+.cg-ln.thick { height: 2px; background: var(--cg-text-primary); }
+.cg-count {
+  margin-left: auto; color: var(--cg-text-disabled);
+  font-family: var(--cg-font-mono);
+  font-variant-numeric: tabular-nums; font-size: 11px; letter-spacing: 0.04em;
+}
+
+/* ---------- canvas stage ---------- */
 .cg-stage {
-  position: relative; background: radial-gradient(circle at center, #0d0d0d 0%, #070707 100%); overflow: hidden;
+  position: relative;
+  background: var(--cg-black);
+  overflow: hidden;
 }
 .cg-stage canvas { display: block; width: 100%; height: 100%; }
 .cg-hud {
-  position: absolute; top: 10px; left: 12px; font-size: 11px; color: #6a6a6a;
-  font-family: ui-monospace, Menlo, monospace; letter-spacing: 0.04em; pointer-events: none;
+  position: absolute; top: 10px; left: 12px;
+  font-family: var(--cg-font-mono);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: lowercase;
+  color: var(--cg-text-disabled); pointer-events: none;
 }
-.cg-hud b { color: #bababa; font-weight: 500; }
-.cg-zoom { position: absolute; bottom: 10px; left: 12px; display: flex; gap: 4px; }
+.cg-hud b { color: var(--cg-text-secondary); font-weight: 400; }
+.cg-zoom { position: absolute; bottom: 12px; left: 12px; display: flex; gap: 4px; }
 .cg-zoom button {
-  width: 26px; height: 26px; background: #111; border: 1px solid #1e1e1e; color: #bababa;
-  border-radius: 5px; cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+  width: 26px; height: 26px; background: var(--cg-surface); border: 1px solid var(--cg-border);
+  color: var(--cg-text-secondary); border-radius: 999px;
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+  transition: border-color 150ms cubic-bezier(0.25, 0.1, 0.25, 1),
+              color 150ms cubic-bezier(0.25, 0.1, 0.25, 1);
 }
-.cg-zoom button[data-cg="zoom-fit"] { width: auto; padding: 0 8px; font-size: 11px; }
-.cg-zoom button:hover { border-color: #2e2e2e; color: #fff; }
+.cg-zoom button[data-cg="zoom-fit"] {
+  width: auto; padding: 0 10px;
+  font-family: var(--cg-font-mono);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+}
+.cg-zoom button:hover { border-color: var(--cg-border-visible); color: var(--cg-text-primary); }
 .cg-tooltip {
-  position: absolute; pointer-events: none; background: #0f0f0f; border: 1px solid #2a2a2a;
-  border-radius: 6px; padding: 6px 9px; font-size: 11px; color: #e6e6e6; white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.6); display: none; z-index: 5;
+  position: absolute; pointer-events: none;
+  background: var(--cg-surface-raised); border: 1px solid var(--cg-border-visible);
+  border-radius: 4px; padding: 6px 9px;
+  font-size: 11px; color: var(--cg-text-primary); white-space: nowrap;
+  display: none; z-index: 5;
 }
-.cg-tooltip .cg-k { color: #6a6a6a; margin-right: 4px; }
+.cg-tooltip .cg-k {
+  font-family: var(--cg-font-mono); font-size: 10px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--cg-text-disabled); margin-right: 6px;
+}
+
+/* ---------- right panel ---------- */
 .cg-panel {
-  border-left: 1px solid #1e1e1e; background: #0c0c0c; display: flex; flex-direction: column; min-height: 0;
+  border-left: 1px solid var(--cg-border);
+  background: var(--cg-surface);
+  display: flex; flex-direction: column; min-height: 0;
 }
-.cg-panel-head { padding: 14px 16px 12px; border-bottom: 1px solid #1e1e1e; }
-.cg-panel-crumbs { font-size: 11px; color: #6a6a6a; font-family: ui-monospace, Menlo, monospace; margin-bottom: 8px; }
-.cg-panel-sep { color: #3a3a3a; margin: 0 5px; }
-.cg-panel h2 { font-size: 17px; font-weight: 500; margin: 0 0 6px; letter-spacing: -0.01em; color: #fff; }
+.cg-panel-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--cg-border); }
+.cg-panel-crumbs {
+  font-family: var(--cg-font-mono);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: lowercase;
+  color: var(--cg-text-disabled); margin-bottom: 8px;
+}
+.cg-panel-sep { color: var(--cg-border-visible); margin: 0 5px; }
+.cg-panel h2 {
+  font-size: 18px; font-weight: 400;
+  margin: 0 0 10px; letter-spacing: -0.01em;
+  color: var(--cg-text-display);
+}
 .cg-panel-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Cicrus badges: border-only pill, font-mono uppercase, category colour on
+   text + border, transparent background. */
 .cg-tag {
-  font-size: 10px; padding: 2px 7px; border-radius: 10px; border: 1px solid #242424;
-  color: #9a9a9a; letter-spacing: 0.02em;
+  font-family: var(--cg-font-mono);
+  font-size: 10px; font-weight: 400;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--cg-border-visible);
+  color: var(--cg-text-secondary);
+  background: transparent;
 }
-.cg-tag.teal { color: #5eead4; border-color: rgba(94,234,212,0.25); }
-.cg-tag.amber { color: #fbbf24; border-color: rgba(251,191,36,0.25); }
-.cg-tag.violet { color: #a78bfa; border-color: rgba(167,139,250,0.3); }
-.cg-panel-body { padding: 14px 16px; overflow: auto; flex: 1; font-size: 13px; line-height: 1.55; color: #bababa; }
-.cg-panel-body p { margin: 0 0 12px; }
+.cg-tag.teal {
+  color: var(--cg-success);
+  border-color: color-mix(in srgb, var(--cg-success) 35%, transparent);
+}
+.cg-tag.amber {
+  color: var(--cg-warning);
+  border-color: color-mix(in srgb, var(--cg-warning) 35%, transparent);
+}
+.cg-tag.violet {
+  color: var(--cg-interactive);
+  border-color: color-mix(in srgb, var(--cg-interactive) 35%, transparent);
+}
+.cg-panel-body {
+  padding: 16px; overflow: auto; flex: 1;
+  font-size: 13px; line-height: 1.55; color: var(--cg-text-secondary);
+}
+.cg-panel-body p { margin: 0 0 12px; font-weight: 300; }
 .cg-sec {
-  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: #6a6a6a;
-  margin: 16px 0 8px; font-weight: 500;
+  font-family: var(--cg-font-mono);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--cg-text-disabled);
+  margin: 20px 0 10px; font-weight: 400;
 }
 .cg-sec:first-child { margin-top: 4px; }
 .cg-rel {
-  display: flex; align-items: center; gap: 8px; padding: 6px 4px;
-  border-bottom: 1px dashed #1a1a1a; font-size: 12px;
+  display: flex; align-items: center; gap: 8px; padding: 8px 4px;
+  border-bottom: 1px dashed var(--cg-border); font-size: 12px;
 }
 .cg-rel:last-child { border-bottom: 0; }
 .cg-verb {
-  font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: #6a6a6a;
-  padding: 1px 5px; border: 1px solid #242424; border-radius: 3px;
-  letter-spacing: 0.04em; min-width: 90px; text-align: center;
+  font-family: var(--cg-font-mono);
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--cg-text-secondary);
+  padding: 3px 8px; border: 1px solid var(--cg-border-visible); border-radius: 999px;
+  min-width: 96px; text-align: center;
+  background: transparent;
 }
-.cg-verb.contradict { color: #f87171; border-color: rgba(248,113,113,0.3); }
-.cg-verb.refine     { color: #5eead4; border-color: rgba(94,234,212,0.3); }
-.cg-verb.derive     { color: #a78bfa; border-color: rgba(167,139,250,0.3); }
-.cg-target { color: #e6e6e6; cursor: pointer; flex: 1; }
-.cg-target:hover { text-decoration: underline; text-decoration-color: #3a3a3a; }
-.cg-conf { font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: #6a6a6a; font-variant-numeric: tabular-nums; }
+.cg-verb.contradict {
+  color: var(--cg-accent);
+  border-color: color-mix(in srgb, var(--cg-accent) 35%, transparent);
+}
+.cg-verb.refine {
+  color: var(--cg-success);
+  border-color: color-mix(in srgb, var(--cg-success) 35%, transparent);
+}
+.cg-verb.derive {
+  color: var(--cg-interactive);
+  border-color: color-mix(in srgb, var(--cg-interactive) 35%, transparent);
+}
+.cg-target { color: var(--cg-text-primary); cursor: pointer; flex: 1; }
+.cg-target:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--cg-border-visible);
+}
+.cg-conf {
+  font-family: var(--cg-font-mono); font-size: 10px; letter-spacing: 0.04em;
+  color: var(--cg-text-disabled); font-variant-numeric: tabular-nums;
+}
 .cg-meta { display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; font-size: 12px; margin: 0; }
-.cg-meta dt { color: #6a6a6a; }
-.cg-meta dd { margin: 0; color: #e6e6e6; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.cg-meta dt {
+  font-family: var(--cg-font-mono);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--cg-text-disabled);
+}
+.cg-meta dd {
+  margin: 0; color: var(--cg-text-primary);
+  font-family: var(--cg-font-mono); font-size: 11px; letter-spacing: 0.02em;
+}
+
 @media (max-width: 900px) {
   .cg-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
-  .cg-side { max-height: 120px; border-right: 0; border-bottom: 1px solid #1e1e1e; display: flex; flex-wrap: wrap; gap: 10px; }
+  .cg-side {
+    max-height: 120px; border-right: 0;
+    border-bottom: 1px solid var(--cg-border);
+    display: flex; flex-wrap: wrap; gap: 10px;
+  }
   .cg-side h4 { width: 100%; margin: 0; }
-  .cg-panel { border-left: 0; border-top: 1px solid #1e1e1e; max-height: 260px; }
+  .cg-panel {
+    border-left: 0; border-top: 1px solid var(--cg-border);
+    max-height: 260px;
+  }
 }
 `;
 
