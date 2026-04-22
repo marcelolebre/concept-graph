@@ -386,18 +386,17 @@ export class ConceptGraph {
         const other = outgoing ? e.t : e.s;
         // Pill reflects the canonical bucket so the right panel tells
         // the same story as the sidebar and the edge styling:
-        // {related, indirectly-related, contradicts}. The original
-        // verb (e.label) is kept on a `title` tooltip for the curious.
+        // {related, indirectly-related, contradicts}. Original verb is
+        // dropped entirely — one vocabulary across the whole UI.
         // Incoming edges prefix with an arrow so direction stays clear.
         const canonical = e.type || 'related';
         const display = canonical.replace(/-/g, ' ');
         const verb = outgoing ? display : '← ' + display;
-        const original = String(e.label || canonical).replace(/_/g, ' ');
         const cls = canonical === 'contradicts' ? 'contradict'
                   : canonical === 'indirectly-related' ? 'refine'
                   : 'derive';
         return `<div class="cg-rel">
-          <span class="cg-verb ${cls}" title="${escapeAttr(original)}">${escapeHtml(verb)}</span>
+          <span class="cg-verb ${cls}">${escapeHtml(verb)}</span>
           <span class="cg-target" data-goto="${escapeAttr(other.id)}">${escapeHtml(other.label || other.id)}</span>
           <span class="cg-conf">${Math.round(e.conf * 100)}%</span>
         </div>`;
