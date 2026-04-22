@@ -399,7 +399,7 @@ export class ConceptGraph {
       g.lineWidth = 1.1;
       // Stable mid-range hash seed so the legend shows each atom in
       // a recognisable canonical pose rather than a random variant.
-      this._drawAtom(g, kind, w / 2, h / 2, Math.min(w, h) / 2 - 3, 0.3, 0.55, 0.8);
+      this._drawAtom(g, kind, w / 2, h / 2, Math.min(w, h) / 2 - 3, 0.3);
     }
 
     // Click handlers: toggle the filter, re-render (for the `.active`
@@ -898,8 +898,8 @@ export class ConceptGraph {
   // (decision = two satellites on one axis).
   _drawKindGlyph(ctx, n, kind, x, y, r) {
     const h = fnv1a(String(n.id || n.label || ''));
-    const [h0, h1, h2] = hashFloats(h, 3);
-    this._drawAtom(ctx, kind, x, y, r, h0, h1, h2);
+    const [h0] = hashFloats(h, 1);
+    this._drawAtom(ctx, kind, x, y, r, h0);
 
     // Provenance dot: tiny marker in the upper-right of every node,
     // coloured by run. Kept on top of every shape for consistency.
@@ -916,171 +916,97 @@ export class ConceptGraph {
     }
   }
 
-  // Stateless atom renderer. Takes explicit colour, x/y/r, and three
-  // hash-derived floats in [0,1). Reusable by the sidebar swatches,
-  // which call this at a much smaller radius with a fixed hash seed so
-  // the legend shows the canonical glyph for each kind.
-  _drawAtom(ctx, kind, x, y, r, h0 = 0.5, h1 = 0.5, h2 = 0.5) {
+  // Stateless glyph renderer. Monochrome (everything in the kind's own
+  // stroke colour), single distinguishing feature per kind, inscribed
+  // in a circle of radius r so hit-testing and label placement stay
+  // stable. h0 (hash) seeds rotation only — no electron counts, no
+  // inner rings, no layered shells.
+  _drawAtom(ctx, kind, x, y, r, h0 = 0.5) {
     const stroke = ctx.strokeStyle;
     const fill = ctx.fillStyle;
     const lw = ctx.lineWidth;
 
-    const ring = (rr, lineW = Math.max(0.6, lw * 0.6)) => {
-      ctx.save();
-      ctx.fillStyle = 'transparent';
-      ctx.lineWidth = lineW;
+    // Reusable polygon path inscribed in radius r, rotated by `rot`.
+    const poly = (sides, rot) => {
+      ctx.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const a = rot + (i / sides) * Math.PI * 2;
+        const px = x + Math.cos(a) * r;
+        const py = y + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    };
+    const circle = (rr) => {
       ctx.beginPath();
       ctx.arc(x, y, rr, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
     };
-    const nucleus = (rr = Math.max(1.5, r * 0.22)) => {
-      ctx.save();
-      ctx.fillStyle = stroke; // nucleus takes the kind colour
-      ctx.beginPath();
-      ctx.arc(x, y, rr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    };
-    const electron = (rr, angle, dotR = Math.max(1.4, r * 0.14)) => {
-      const ex = x + Math.cos(angle) * rr;
-      const ey = y + Math.sin(angle) * rr;
-      ctx.save();
-      ctx.fillStyle = stroke;
-      ctx.beginPath();
-      ctx.arc(ex, ey, dotR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    };
-    const tiltedEllipse = (rx, ry, rot) => {
-      ctx.save();
-      ctx.fillStyle = 'transparent';
-      ctx.lineWidth = Math.max(0.6, lw * 0.6);
-      ctx.translate(x, y);
-      ctx.rotate(rot);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    };
+
+    // All kinds paint the same way: stroked outline + translucent fill
+    // in the kind's colour. Switch only decides the *shape*.
+    ctx.save();
+    ctx.fillStyle = stroke;
+    const savedAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = savedAlpha * 0.15;
 
     switch (kind) {
-      case 'entity': {
-        // Heaviest atom: two shells, 3 electrons distributed across
-        // them. Inner shell 1 electron, outer shell 2. Rotation = h0.
-        ring(r * 0.48);
-        ring(r * 0.88);
-        nucleus();
-        const base = h0 * Math.PI * 2;
-        electron(r * 0.48, base);
-        electron(r * 0.88, base + Math.PI * (0.35 + h1 * 0.3));
-        electron(r * 0.88, base + Math.PI * (1.35 + h2 * 0.3));
-        break;
-      }
-      case 'concept': {
-        // Standard atom: one shell, 2 electrons on opposite phases.
-        ring(r * 0.75);
-        nucleus();
-        const base = h0 * Math.PI * 2;
-        electron(r * 0.75, base);
-        electron(r * 0.75, base + Math.PI);
-        break;
-      }
-      case 'person': {
-        // Planet + moon: one tilted orbit, single companion. Feels like
-        // a being-with-other rather than a pure concept.
-        const tilt = h0 * Math.PI;
-        tiltedEllipse(r * 0.85, r * 0.45, tilt);
-        nucleus(Math.max(1.8, r * 0.28));
-        const ang = h1 * Math.PI * 2;
-        // electron rides the tilted orbit — compute point on ellipse
-        const ex = Math.cos(ang) * r * 0.85;
-        const ey = Math.sin(ang) * r * 0.45;
-        const cos = Math.cos(tilt), sin = Math.sin(tilt);
-        const mx = x + ex * cos - ey * sin;
-        const my = y + ex * sin + ey * cos;
-        ctx.save();
+      case 'entity':
+        // Filled + stroked disc — the densest, simplest shape.
+        circle(r); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        circle(r); ctx.stroke();
+        // inner dot to mark it as the root
         ctx.fillStyle = stroke;
-        ctx.beginPath(); ctx.arc(mx, my, Math.max(1.6, r * 0.18), 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
+        circle(r * 0.28); ctx.fill();
         break;
-      }
-      case 'organization': {
-        // Cluster halo: no orbit ring, just 4 satellite dots around a
-        // nucleus. Reads as a collective / federation.
-        nucleus();
-        const base = h0 * Math.PI * 2;
-        const rr = r * 0.7;
-        for (let i = 0; i < 4; i++) {
-          electron(rr, base + (i / 4) * Math.PI * 2, Math.max(1.2, r * 0.12));
-        }
+      case 'concept':
+        // Plain outlined disc.
+        circle(r); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        circle(r); ctx.stroke();
         break;
-      }
-      case 'artifact': {
-        // Trinity / Mercedes pattern: 3 dots around a nucleus, no ring.
-        // Evokes a made-thing with its forming elements.
-        nucleus();
-        const base = h0 * Math.PI * 2;
-        const rr = r * 0.75;
-        for (let i = 0; i < 3; i++) {
-          electron(rr, base + (i / 3) * Math.PI * 2, Math.max(1.6, r * 0.18));
-        }
+      case 'person':
+        // Square. Stable, grounded — a person stands.
+        poly(4, Math.PI / 4); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        poly(4, Math.PI / 4); ctx.stroke();
         break;
-      }
-      case 'observation': {
-        // Comet: nucleus + a trailing dotted streak angled by hash.
-        // Signals a transient event rather than a standing concept.
-        const ang = h0 * Math.PI * 2;
-        nucleus();
-        ctx.save();
-        ctx.fillStyle = stroke;
-        for (let i = 1; i <= 4; i++) {
-          const t = i / 4;
-          const tx = x + Math.cos(ang) * r * t;
-          const ty = y + Math.sin(ang) * r * t;
-          const dotR = Math.max(0.8, r * (0.18 - t * 0.10));
-          ctx.globalAlpha = ctx.globalAlpha * (i === 1 ? 1 : 1);
-          ctx.beginPath(); ctx.arc(tx, ty, dotR, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
+      case 'organization':
+        // Hexagon. Structural, many-sided.
+        poly(6, h0 * Math.PI / 3); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        poly(6, h0 * Math.PI / 3); ctx.stroke();
         break;
-      }
-      case 'decision': {
-        // Two-body system: nucleus + two opposing satellites on a
-        // hash-chosen axis. The fork — two paths from one point.
-        nucleus();
-        const ang = h0 * Math.PI;
-        const rr = r * 0.75;
-        electron(rr, ang, Math.max(1.8, r * 0.20));
-        electron(rr, ang + Math.PI, Math.max(1.8, r * 0.20));
-        // faint connecting axis
-        ctx.save();
-        ctx.strokeStyle = stroke;
-        ctx.globalAlpha = ctx.globalAlpha * 0.5;
-        ctx.lineWidth = Math.max(0.6, lw * 0.6);
-        ctx.beginPath();
-        ctx.moveTo(x - Math.cos(ang) * rr * 0.7, y - Math.sin(ang) * rr * 0.7);
-        ctx.lineTo(x + Math.cos(ang) * rr * 0.7, y + Math.sin(ang) * rr * 0.7);
-        ctx.stroke();
-        ctx.restore();
+      case 'artifact':
+        // Triangle pointing up. A made thing, directional.
+        poly(3, -Math.PI / 2 + h0 * 0.2); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        poly(3, -Math.PI / 2 + h0 * 0.2); ctx.stroke();
         break;
-      }
-      default: {
-        // Unknown kind: neutral single-shell atom, no electrons.
-        ring(r * 0.75);
-        nucleus();
+      case 'observation':
+        // Diamond. Small, sharp, event-like.
+        poly(4, 0 + h0 * 0.1); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        poly(4, 0 + h0 * 0.1); ctx.stroke();
         break;
-      }
+      case 'decision':
+        // Pentagon. Chosen — one extra side over a square.
+        poly(5, -Math.PI / 2); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        poly(5, -Math.PI / 2); ctx.stroke();
+        break;
+      default:
+        circle(r); ctx.fill();
+        ctx.globalAlpha = savedAlpha;
+        circle(r); ctx.stroke();
+        break;
     }
 
-    // restore caller state
+    ctx.restore();
     ctx.strokeStyle = stroke;
     ctx.fillStyle = fill;
     ctx.lineWidth = lw;
     ctx.setLineDash([]);
-    void h2;
   }
 
   _hitNode(sx, sy) {
