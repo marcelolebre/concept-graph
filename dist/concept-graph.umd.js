@@ -926,89 +926,82 @@ class ConceptGraph {
     }
   }
 
-  // Stateless glyph renderer. Monochrome (everything in the kind's own
-  // stroke colour), single distinguishing feature per kind, inscribed
-  // in a circle of radius r so hit-testing and label placement stay
-  // stable. h0 (hash) seeds rotation only — no electron counts, no
-  // inner rings, no layered shells.
+  // Stateless glyph renderer. Every kind draws the same stroked+filled
+  // disc and differs only by a small abstract mark overlaid on top.
+  // The intent is formal distinction without figurative semantics —
+  // marks look like tally strokes or runic punctuation rather than
+  // recognisable shapes. Monochrome in the kind's stroke colour.
+  // h0 (hash) rotates the mark so same-kind siblings don't perfectly
+  // superimpose.
   _drawAtom(ctx, kind, x, y, r, h0 = 0.5) {
     const stroke = ctx.strokeStyle;
     const fill = ctx.fillStyle;
     const lw = ctx.lineWidth;
+    const savedAlpha = ctx.globalAlpha;
 
-    // Reusable polygon path inscribed in radius r, rotated by `rot`.
-    const poly = (sides, rot) => {
-      ctx.beginPath();
-      for (let i = 0; i < sides; i++) {
-        const a = rot + (i / sides) * Math.PI * 2;
-        const px = x + Math.cos(a) * r;
-        const py = y + Math.sin(a) * r;
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-    };
-    const circle = (rr) => {
-      ctx.beginPath();
-      ctx.arc(x, y, rr, 0, Math.PI * 2);
-    };
-
-    // All kinds paint the same way: stroked outline + translucent fill
-    // in the kind's colour. Switch only decides the *shape*.
+    // Base disc: translucent fill + stroked outline. Every kind has it.
     ctx.save();
     ctx.fillStyle = stroke;
-    const savedAlpha = ctx.globalAlpha;
     ctx.globalAlpha = savedAlpha * 0.15;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = savedAlpha;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    // Mark overlay. Stroked in the kind's colour at ~1.2 px, rotated
+    // by h0 so each node gets a stable unique orientation.
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(h0 * Math.PI * 2);
+    ctx.strokeStyle = stroke;
+    ctx.fillStyle = stroke;
+    ctx.lineWidth = Math.max(1, lw);
+    ctx.lineCap = 'round';
+
+    const segment = (x1, y1, x2, y2) => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    };
 
     switch (kind) {
-      case 'entity':
-        // Filled + stroked disc — the densest, simplest shape.
-        circle(r); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        circle(r); ctx.stroke();
-        // inner dot to mark it as the root
-        ctx.fillStyle = stroke;
-        circle(r * 0.28); ctx.fill();
-        break;
       case 'concept':
-        // Plain outlined disc.
-        circle(r); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        circle(r); ctx.stroke();
+        // No mark — the baseline. A plain disc is the quietest glyph.
+        break;
+      case 'entity':
+        // Single filled dot at centre. Denotes the root / anchor.
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(1.4, r * 0.22), 0, Math.PI * 2);
+        ctx.fill();
         break;
       case 'person':
-        // Square. Stable, grounded — a person stands.
-        poly(4, Math.PI / 4); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        poly(4, Math.PI / 4); ctx.stroke();
+        // One short stroke — single tally mark.
+        segment(0, -r * 0.55, 0, r * 0.55);
         break;
       case 'organization':
-        // Hexagon. Structural, many-sided.
-        poly(6, h0 * Math.PI / 3); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        poly(6, h0 * Math.PI / 3); ctx.stroke();
+        // Two parallel strokes — doubled tally.
+        segment(-r * 0.28, -r * 0.55, -r * 0.28, r * 0.55);
+        segment( r * 0.28, -r * 0.55,  r * 0.28, r * 0.55);
         break;
       case 'artifact':
-        // Triangle pointing up. A made thing, directional.
-        poly(3, -Math.PI / 2 + h0 * 0.2); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        poly(3, -Math.PI / 2 + h0 * 0.2); ctx.stroke();
+        // Horizontal bar across the centre.
+        segment(-r * 0.65, 0, r * 0.65, 0);
         break;
       case 'observation':
-        // Diamond. Small, sharp, event-like.
-        poly(4, 0 + h0 * 0.1); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        poly(4, 0 + h0 * 0.1); ctx.stroke();
+        // Diagonal stroke.
+        segment(-r * 0.5, -r * 0.5, r * 0.5, r * 0.5);
         break;
       case 'decision':
-        // Pentagon. Chosen — one extra side over a square.
-        poly(5, -Math.PI / 2); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        poly(5, -Math.PI / 2); ctx.stroke();
+        // Cross — two strokes meeting at the centre. Not an X: a plus.
+        segment(0, -r * 0.55, 0, r * 0.55);
+        segment(-r * 0.55, 0, r * 0.55, 0);
         break;
       default:
-        circle(r); ctx.fill();
-        ctx.globalAlpha = savedAlpha;
-        circle(r); ctx.stroke();
         break;
     }
 
