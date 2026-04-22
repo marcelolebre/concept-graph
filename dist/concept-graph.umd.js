@@ -44,6 +44,30 @@ const KIND_STROKE = {
   concept: 'interactive', entity: 'interactive',
 };
 
+// Deterministic 32-bit FNV-1a hash over a string. Used to give every
+// node a stable per-name glyph variant (rotation, facet count, inner
+// ornament phase) without pulling in a crypto dependency. Same id =
+// same glyph across reloads and machines.
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h >>> 0;
+}
+
+// Pull up to 4 independent [0..1) floats out of a hash by slicing
+// disjoint bit windows. Good enough for visual variance; not crypto.
+function hashFloats(h, n) {
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const chunk = (h >>> (i * 8)) & 0xff;
+    out[i] = chunk / 256;
+  }
+  return out;
+}
+
 // Parse a hex colour (#rgb or #rrggbb) or rgb[a]() string into [r,g,b,a].
 // Returns null if the colour can't be parsed. Used to blend cicrus tokens
 // in confidence mode so the component tracks dark/light themes.
@@ -825,19 +849,11 @@ class ConceptGraph {
       ctx.strokeStyle = stroke;
       ctx.lineWidth = strokeW;
       if (dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      if (s.mode !== 'provenance') {
-        ctx.setLineDash([]);
-        ctx.fillStyle = RUN_COLORS[(n.run ?? 0) % RUN_COLORS.length];
-        ctx.globalAlpha = alpha * 0.8;
-        ctx.beginPath();
-        ctx.arc(x + r*0.7, y - r*0.7, 1.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      // Shape family is chosen by kind; per-node variance (rotation,
+      // inner ornament phase, facet count) comes from a stable hash of
+      // the id, so the graph looks the same across reloads but every
+      // node is visibly individual.
+      this._drawKindGlyph(ctx, n, kind, x, y, r);
 
       const showLabel = isFocus || isHover || n.deg >= 4;
       if (showLabel && n.label) {
@@ -850,6 +866,142 @@ class ConceptGraph {
       }
       ctx.restore();
     }
+  }
+
+  // Draw the kind-specific glyph for a node. The canvas ctx's fillStyle
+  // and strokeStyle are already set by the caller. Every glyph is
+  // inscribed in a circle of radius `r` so layout, hit-testing and
+  // label placement stay aligned across shapes.
+  _drawKindGlyph(ctx, n, kind, x, y, r) {
+    const h = fnv1a(String(n.id || n.label || ''));
+    const [h0, h1, h2] = hashFloats(h, 3);
+
+    const poly = (sides, rot, rScale = 1) => {
+      ctx.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const a = rot + (i / sides) * Math.PI * 2;
+        const px = x + Math.cos(a) * r * rScale;
+        const py = y + Math.sin(a) * r * rScale;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    };
+
+    const circle = (cx, cy, rr) => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+    };
+
+    switch (kind) {
+      case 'person': {
+        // Filled circle + a tangent tick mark on the perimeter (angle
+        // from hash). Feels like a portrait medallion.
+        circle(x, y, r); ctx.fill(); ctx.stroke();
+        const ang = h0 * Math.PI * 2;
+        const tx = x + Math.cos(ang) * r;
+        const ty = y + Math.sin(ang) * r;
+        const savedFill = ctx.fillStyle;
+        ctx.fillStyle = ctx.strokeStyle;
+        circle(tx, ty, Math.max(1.6, r * 0.18)); ctx.fill();
+        ctx.fillStyle = savedFill;
+        break;
+      }
+      case 'organization': {
+        // Rounded square with radius proportional to hash. Institutional
+        // feel: blocky, aligned, but softened.
+        const rot = (h0 - 0.5) * 0.25; // gentle rotation, ±7°
+        const corner = r * (0.18 + h1 * 0.25);
+        ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+        const s = r * 0.95;
+        ctx.beginPath();
+        ctx.moveTo(-s + corner, -s);
+        ctx.arcTo( s, -s,  s, -s + corner, corner);
+        ctx.arcTo( s,  s,  s - corner,  s, corner);
+        ctx.arcTo(-s,  s, -s,  s - corner, corner);
+        ctx.arcTo(-s, -s, -s + corner, -s, corner);
+        ctx.closePath();
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+        break;
+      }
+      case 'entity': {
+        // Double ring: outer circle + a smaller inscribed circle.
+        // The inner circle's radius is hash-biased between 45-65 %.
+        circle(x, y, r); ctx.fill(); ctx.stroke();
+        const inner = r * (0.45 + h0 * 0.20);
+        const savedFill = ctx.fillStyle;
+        ctx.fillStyle = 'transparent';
+        circle(x, y, inner); ctx.stroke();
+        ctx.fillStyle = savedFill;
+        break;
+      }
+      case 'artifact': {
+        // Hexagon, rotated by hash. Crystalline feel for made-things.
+        const rot = h0 * Math.PI / 3; // full hex-symmetry span
+        poly(6, rot + Math.PI / 6); // pointy-top by default
+        ctx.fill(); ctx.stroke();
+        break;
+      }
+      case 'observation': {
+        // Triangle pointing at a hash-chosen angle. Observational arrow.
+        const rot = h0 * Math.PI * 2;
+        poly(3, rot - Math.PI / 2);
+        ctx.fill(); ctx.stroke();
+        break;
+      }
+      case 'decision': {
+        // Diamond (square rotated 45°). A tiny inner line records the
+        // decision axis; angle seeded by hash.
+        poly(4, Math.PI / 4);
+        ctx.fill(); ctx.stroke();
+        const ang = h0 * Math.PI;
+        const savedStroke = ctx.strokeStyle;
+        const savedWidth = ctx.lineWidth;
+        ctx.lineWidth = Math.max(1, savedWidth * 0.8);
+        ctx.beginPath();
+        ctx.moveTo(x - Math.cos(ang) * r * 0.45, y - Math.sin(ang) * r * 0.45);
+        ctx.lineTo(x + Math.cos(ang) * r * 0.45, y + Math.sin(ang) * r * 0.45);
+        ctx.stroke();
+        ctx.strokeStyle = savedStroke;
+        ctx.lineWidth = savedWidth;
+        break;
+      }
+      case 'concept':
+      default: {
+        // Circle + concentric inner ring whose stroke offset is hashed,
+        // giving each concept a unique "target" signature.
+        circle(x, y, r); ctx.fill(); ctx.stroke();
+        const inner = r * (0.30 + h0 * 0.20);
+        const savedFill = ctx.fillStyle;
+        const savedWidth = ctx.lineWidth;
+        ctx.fillStyle = 'transparent';
+        ctx.lineWidth = Math.max(0.8, savedWidth * 0.7);
+        // dashed inner ring, phase-shifted per node
+        ctx.setLineDash([3, 3]);
+        ctx.lineDashOffset = h1 * 6;
+        circle(x, y, inner); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
+        ctx.lineWidth = savedWidth;
+        ctx.fillStyle = savedFill;
+        break;
+      }
+    }
+
+    // Provenance dot: tiny marker in the upper-right of every node,
+    // coloured by run. Kept on top of every shape for consistency.
+    const s = this._state;
+    if (s.mode !== 'provenance') {
+      ctx.setLineDash([]);
+      ctx.fillStyle = RUN_COLORS[(n.run ?? 0) % RUN_COLORS.length];
+      const savedAlpha = ctx.globalAlpha;
+      ctx.globalAlpha = savedAlpha * 0.8;
+      circle(x + r * 0.7, y - r * 0.7, 1.6); ctx.fill();
+      ctx.globalAlpha = savedAlpha;
+    }
+    // h2 intentionally reserved for future use (e.g. glyph accent colour
+    // or size jitter) so node visuals can evolve without re-hashing.
+    void h2;
   }
 
   _hitNode(sx, sy) {
