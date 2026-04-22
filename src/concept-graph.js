@@ -12,27 +12,26 @@
 
 const RUN_COLORS = ['#5eead4', '#a78bfa', '#fbbf24', '#f472b6', '#60a5fa', '#34d399'];
 
-// Kind taxonomy → visual treatment. Every concrete kind that graphify
-// emits gets an intentional colour; anything unknown falls through to
-// `violet` / default border. Three CSS tag classes (teal / amber /
-// violet) are re-used across seven kinds so the palette stays tight.
+// Kind taxonomy → Cicrus token mapping. Seven concrete kinds get one of
+// three Cicrus colour tokens; anything unknown falls through to
+// `interactive`. Tag-class names match the Cicrus token names (not
+// colour names) so the CSS reads like the design system.
 //
-//   teal    — real-world nouns you can point at (person, organization)
-//   amber   — things-that-happened or decisions made (observation, decision, artifact)
-//   violet  — abstract concepts and the root entity node
+//   success     — real-world nouns you can point at (person, organization)
+//   warning     — things that happened / were decided (observation, decision, artifact)
+//   interactive — abstractions and the root entity node (concept, entity)
 //
-// KIND_STROKE maps to cicrus theme tokens on the canvas so the ring
-// colour of each node matches its sidebar pill colour.
-const KIND_TAG_CLASS = {
-  person: 'teal', organization: 'teal',
-  observation: 'amber', decision: 'amber', artifact: 'amber',
-  concept: 'violet', entity: 'violet',
-};
-const KIND_STROKE = {
+// Both the sidebar tag pill and the canvas ring stroke read from this
+// single map, so pill colour and node ring always agree.
+const KIND_TOKEN = {
   person: 'success', organization: 'success',
   observation: 'warning', decision: 'warning', artifact: 'warning',
   concept: 'interactive', entity: 'interactive',
 };
+// Back-compat aliases — kept so older callers / vendored bundles that
+// reference KIND_TAG_CLASS / KIND_STROKE by name don't break.
+const KIND_TAG_CLASS = KIND_TOKEN;
+const KIND_STROKE = KIND_TOKEN;
 
 // Deterministic 32-bit FNV-1a hash over a string. Used to give every
 // node a stable per-name glyph variant (rotation, facet count, inner
@@ -887,131 +886,151 @@ export class ConceptGraph {
   // in a circle of radius `r` so layout, hit-testing and label
   // placement stay aligned across shapes.
   //
-  // Aesthetic language: *atoms in space*.
-  //   nucleus = tiny filled core at the node centre
-  //   shells  = concentric orbit rings (thin, stroke-only)
-  //   electrons = dots riding on those rings, at hash-seeded angles
-  // Each kind picks a specific orbital signature so the graph reads
-  // like a spectroscopy chart: one glance tells you which atoms are
-  // in the room, which are heavy (entity = two shells + 3 electrons),
-  // which are transient (observation = comet trail), which are forks
-  // (decision = two satellites on one axis).
+  // Aesthetic language: *instrument dial*. Every kind shares the same
+  // outer silhouette — a thin stroked ring — and encodes its identity
+  // through a small set of filled dots riding on (or inside) the ring.
+  // The vocabulary is one dial family, not seven shapes. Reads as an
+  // instrument panel: same dial, different needle positions.
+  //
+  // Why not polygons: varying the silhouette (square/hex/triangle/
+  // diamond/X/…) pushed the graph toward "atoms in space" — playful,
+  // decorative, five different visual languages at once. Cicrus is
+  // percussive and mechanical; encode with *pattern* before *shape*.
+  //
+  // Entity is the one "break the pattern" moment: a double-stroke ring
+  // with a larger centre dot, slightly larger than the rest. It's the
+  // root of the graph and earns the single expressive moment.
   _drawKindGlyph(ctx, n, kind, x, y, r) {
-    const h = fnv1a(String(n.id || n.label || ''));
-    const [h0] = hashFloats(h, 1);
-    this._drawAtom(ctx, kind, x, y, r, h0);
+    this._drawDial(ctx, kind, x, y, r);
 
-    // Provenance dot: tiny marker in the upper-right of every node,
-    // coloured by run. Kept on top of every shape for consistency.
+    // Provenance pip was previously drawn on every node in every mode,
+    // which doubled the visual language (shape + colour pip) at density.
+    // Provenance is its own dedicated mode now — default mode stays
+    // silent so the dial reads cleanly.
     const s = this._state;
-    if (s.mode !== 'provenance') {
-      ctx.setLineDash([]);
-      ctx.fillStyle = RUN_COLORS[(n.run ?? 0) % RUN_COLORS.length];
-      const savedAlpha = ctx.globalAlpha;
-      ctx.globalAlpha = savedAlpha * 0.8;
-      ctx.beginPath();
-      ctx.arc(x + r * 0.7, y - r * 0.7, 1.6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = savedAlpha;
-    }
+    if (s.mode === 'provenance') return;
   }
 
-  // Stateless glyph renderer. One shape per kind, distinct enough to
-  // read at graph zoom. Monochrome: stroked outline + translucent fill
-  // both in the kind's colour. Mixes polygons with two non-polygon
-  // marks (dot-in-disc for entity, crossed strokes for observation) so
-  // the vocabulary isn't uniformly "regular N-gon" and reads as a
-  // varied set even at small scale.
-  _drawAtom(ctx, kind, x, y, r, h0 = 0.5) {
+  // Stateless glyph renderer. One dial family shared across all kinds.
+  // Only the dot configuration varies. Ring is stroke-only; dots are
+  // filled in the kind colour. No hash variance, no jitter, no fills
+  // — the dial is always in the same canonical pose (Cicrus is
+  // mechanical, not random).
+  //
+  // The unused `_h0` argument is kept so older callers (the sidebar
+  // legend, any external integrations) don't need to change their call
+  // site when upgrading.
+  _drawDial(ctx, kind, x, y, r, _h0 = 0) {
     const stroke = ctx.strokeStyle;
-    const fill = ctx.fillStyle;
-    const lw = ctx.lineWidth;
+    const savedFill = ctx.fillStyle;
+    const savedLw = ctx.lineWidth;
+    const savedDash = ctx.getLineDash ? ctx.getLineDash() : [];
     const savedAlpha = ctx.globalAlpha;
 
-    const poly = (sides, rot) => {
+    // Dot size scales with r so the dial reads at any zoom. Floor at
+    // 1.4 px so it doesn't vanish on the sidebar legend (small r).
+    const dot = Math.max(1.4, r * 0.18);
+
+    const drawRing = (radius, { dashed = false, weight = 1 } = {}) => {
       ctx.beginPath();
-      for (let i = 0; i < sides; i++) {
-        const a = rot + (i / sides) * Math.PI * 2;
-        const px = x + Math.cos(a) * r;
-        const py = y + Math.sin(a) * r;
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.lineWidth = savedLw * weight;
+      ctx.setLineDash(dashed ? [2.5, 2.5] : []);
+      ctx.stroke();
     };
-    const circle = (rr) => {
-      ctx.beginPath();
-      ctx.arc(x, y, rr, 0, Math.PI * 2);
-    };
-    // Fill + stroke the current path using the kind's colour, with the
-    // fill at 15 % opacity so the shapes read as lightly tinted rather
-    // than solid blocks. Keeps the graph airy at density.
-    const paint = () => {
+
+    // Place a filled dot on the ring at compass angle `deg` (0° = top,
+    // clockwise). `inset` of 0 sits exactly on the ring; positive values
+    // pull the dot inward (used only for the entity centre dot).
+    const drawDot = (deg, { inset = 0 } = {}) => {
+      const a = (deg - 90) * Math.PI / 180;
+      const rr = r - inset;
+      const px = x + Math.cos(a) * rr;
+      const py = y + Math.sin(a) * rr;
       ctx.save();
       ctx.fillStyle = stroke;
-      ctx.globalAlpha = savedAlpha * 0.15;
+      ctx.beginPath();
+      ctx.arc(px, py, dot, 0, Math.PI * 2);
       ctx.fill();
-      ctx.globalAlpha = savedAlpha;
-      ctx.stroke();
+      ctx.restore();
+    };
+    const drawCenterDot = (scale = 1) => {
+      ctx.save();
+      ctx.fillStyle = stroke;
+      ctx.beginPath();
+      ctx.arc(x, y, dot * scale, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
     };
 
     switch (kind) {
       case 'entity':
-        // Circle with a centre dot. Unambiguously the root.
-        circle(r); paint();
-        ctx.save();
-        ctx.fillStyle = stroke;
-        circle(Math.max(1.6, r * 0.28)); ctx.fill();
-        ctx.restore();
+        // Double-stroke ring + bold centre dot. The one pattern break.
+        // Outer ring is slightly thicker so entity reads as "root" even
+        // at graph zoom when unfocused — distinguishes it from plain
+        // `concept` rings which share the same colour (interactive).
+        drawRing(r, { weight: 1.6 });
+        drawRing(r * 0.62, { weight: 1 });
+        drawCenterDot(1.4);
         break;
+
       case 'concept':
-        // Plain circle.
-        circle(r); paint();
+        // Thin ring, no dots. The abstract/unmarked default.
+        drawRing(r);
         break;
+
+      case 'observation':
+        // Dashed ring, no dots. Transient / witness. Dashed = "not
+        // solid fact", same language as the legacy `hypothesis` kind.
+        drawRing(r, { dashed: true });
+        break;
+
       case 'person':
-        // Square, axis-aligned — stable silhouette, reads at small size.
-        poly(4, Math.PI / 4); paint();
+        // One dot at 12 o'clock. Individual identity = single needle.
+        drawRing(r);
+        drawDot(0);
         break;
-      case 'organization':
-        // Hexagon. Hash rotates inside its symmetry span so orgs don't
-        // all align identically.
-        poly(6, Math.PI / 6 + h0 * (Math.PI / 3)); paint();
-        break;
+
       case 'artifact':
-        // Upward triangle — distinct corner count from square / hex.
-        poly(3, -Math.PI / 2 + (h0 - 0.5) * 0.2); paint();
+        // One dot at 6 o'clock. Produced thing — mirrors `person` across
+        // the horizontal axis. Read as "made", not "actor".
+        drawRing(r);
+        drawDot(180);
         break;
+
       case 'decision':
-        // Diamond (square rotated 45°) — narrow waist, unmistakable
-        // against the axis-aligned person square.
-        poly(4, 0); paint();
+        // Two dots on the horizontal axis (9 & 3). Fork / two branches.
+        drawRing(r);
+        drawDot(270);
+        drawDot(90);
         break;
-      case 'observation': {
-        // Two crossed strokes — a small X. No fill at all, so it reads
-        // as a mark rather than a shape. Breaks polygon monotony.
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.rotate(h0 * Math.PI / 6); // small jitter, stays X-like
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = Math.max(1.4, lw * 1.2);
-        ctx.lineCap = 'round';
-        const d = r * 0.8;
-        ctx.beginPath();
-        ctx.moveTo(-d, -d); ctx.lineTo(d, d);
-        ctx.moveTo(-d,  d); ctx.lineTo(d, -d);
-        ctx.stroke();
-        ctx.restore();
+
+      case 'organization':
+        // Three dots evenly spaced (12 / 4 / 8). A group, read as
+        // multiple aligned needles — same ring, more weight.
+        drawRing(r);
+        drawDot(0);
+        drawDot(120);
+        drawDot(240);
         break;
-      }
+
       default:
-        circle(r); paint();
+        drawRing(r);
         break;
     }
 
     ctx.strokeStyle = stroke;
-    ctx.fillStyle = fill;
-    ctx.lineWidth = lw;
-    ctx.setLineDash([]);
+    ctx.fillStyle = savedFill;
+    ctx.lineWidth = savedLw;
+    ctx.setLineDash(savedDash);
+    ctx.globalAlpha = savedAlpha;
+  }
+
+  // Backwards-compat alias for any external code (examples, vendored
+  // bundles, tests) that referenced the old atoms-in-space renderer by
+  // name. Forwards to the dial renderer.
+  _drawAtom(ctx, kind, x, y, r, h0 = 0.5) {
+    return this._drawDial(ctx, kind, x, y, r, h0);
   }
 
   _hitNode(sx, sy) {
@@ -1261,15 +1280,19 @@ const CG_CSS = `
   color: var(--cg-text-secondary);
   background: transparent;
 }
-.cg-tag.teal {
+/* Kind-tag pills — class name matches the Cicrus token that paints them,
+   so CSS reads the same language as the design system. Legacy aliases
+   (.teal / .amber / .violet) kept for any host stylesheet that still
+   targets the old names. */
+.cg-tag.success, .cg-tag.teal {
   color: var(--cg-success);
   border-color: color-mix(in srgb, var(--cg-success) 35%, transparent);
 }
-.cg-tag.amber {
+.cg-tag.warning, .cg-tag.amber {
   color: var(--cg-warning);
   border-color: color-mix(in srgb, var(--cg-warning) 35%, transparent);
 }
-.cg-tag.violet {
+.cg-tag.interactive, .cg-tag.violet {
   color: var(--cg-interactive);
   border-color: color-mix(in srgb, var(--cg-interactive) 35%, transparent);
 }
